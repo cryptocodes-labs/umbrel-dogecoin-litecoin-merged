@@ -22,6 +22,7 @@
 const u = require('./util');
 const aux = require('./auxpow');
 const { Job, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE } = require('./job');
+const { splitReward } = require('./public-merged');
 
 // Dogecoin's chain ID, from its consensus parameters. Used to re-run the aux
 // rules against our own proof before it is submitted.
@@ -38,8 +39,10 @@ class MergedJob extends Job {
    * @param {Buffer} payoutScript  a LITECOIN scriptPubKey
    * @param {object} auxBlock  dogecoind createauxblock result
    */
-  constructor(id, template, payoutScript, tag, auxBlock) {
-    super(id, template, payoutScript, tag, { auxBlock });
+  constructor(id, template, payoutScript, tag, auxBlock, extra = {}) {
+    // `extra.fee` ({ script, percent }) is set only by the public merged mode;
+    // without it the coinbase below is byte-for-byte what it always was.
+    super(id, template, payoutScript, tag, { auxBlock, fee: extra.fee || null });
 
     this.auxBlock = auxBlock;
     this.auxHash = auxBlock.hash;
@@ -103,17 +106,19 @@ class MergedJob extends Job {
       // extranonce1 + extranonce2 land here
     ]);
 
-    const outputs = [
-      Buffer.concat([
-        (() => {
-          const v = Buffer.alloc(8);
-          v.writeBigUInt64LE(BigInt(this.coinbaseValue));
-          return v;
-        })(),
-        u.varIntBuffer(payoutScript.length),
-        payoutScript,
-      ]),
-    ];
+    const outputs = [];
+    const fee = this.opts.fee;
+    if (fee) {
+      // Public mode: the miner's share first, then the pool fee. The split is
+      // integer and exact, so the two always sum to what the template allows.
+      const { miner, fee: feeValue } = splitReward(this.coinbaseValue, fee.percent);
+      outputs.push(output(miner, payoutScript));
+      if (feeValue > 0n) outputs.push(output(feeValue, fee.script));
+      this.minerValue = miner;
+      this.feeValue = feeValue;
+    } else {
+      outputs.push(output(this.coinbaseValue, payoutScript));
+    }
     // The segwit commitment output. The template's value is computed from the
     // transactions alone — the coinbase's own wtxid is defined as zero — so it
     // stays valid however we build this coinbase.
@@ -202,6 +207,12 @@ class MergedJob extends Job {
       parentVersion: this.version,
     });
   }
+}
+
+function output(value, script) {
+  const v = Buffer.alloc(8);
+  v.writeBigUInt64LE(BigInt(value));
+  return Buffer.concat([v, u.varIntBuffer(script.length), script]);
 }
 
 // The same transaction with a segwit marker, flag and the coinbase's single

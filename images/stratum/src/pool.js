@@ -16,6 +16,7 @@ const { EventEmitter } = require('node:events');
 const { RpcClient } = require('./rpc');
 const { Job, validateShareAsync, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE } = require('./job');
 const { MergedJob, LTC_RULES, DOGE_CHAIN_ID } = require('./merged');
+const pm = require('./public-merged');
 const u = require('./util');
 
 const MAX_LINE_BYTES = 16 * 1024;
@@ -108,6 +109,11 @@ class Pool extends EventEmitter {
     // Litecoin clients below carry the getblocktemplate/longpoll/submitblock
     // traffic — with the same three-client split and for the same reasons.
     this.merged = !!config.mergedMining;
+    // Public merged mining: a port meant for strangers. Each miner is paid on
+    // both chains at the two addresses in its username, and the configured
+    // addresses receive the pool fee instead of the block. Only meaningful on
+    // top of merged mode; the private merged path below is untouched by it.
+    this.publicMerged = this.merged && !!config.publicMerged;
     if (this.merged) {
       if (!config.ltcRpc) throw new Error('merged mining needs ltcRpc connection details');
       this.ltcRpc = new RpcClient(config.ltcRpc);
@@ -372,6 +378,11 @@ class Pool extends EventEmitter {
         `(script ${this.ltcPayoutScript.toString('hex')}), aux Dogecoin paying ${this.config.payoutAddress}`
     );
 
+    if (this.publicMerged) {
+      await this.startPublicMerged();
+      return;
+    }
+
     // Fail now if dogecoind cannot serve aux blocks — an old build, or one
     // without the wallet — instead of at the first template refresh.
     const probe = await this.rpc.call('createauxblock', [this.config.payoutAddress]);
@@ -396,6 +407,63 @@ class Pool extends EventEmitter {
       this.config.lockPayoutAddress = true;
       this.log('merged mining: per-worker payout addresses are disabled; both rewards go to the configured addresses');
     }
+  }
+
+  // Public merged startup. The Dogecoin block is built from dogecoind's
+  // getblocktemplate (see public-merged.js), so that is what is probed — and
+  // the probe builds a real aux block, so a template this code cannot turn into
+  // a Dogecoin block refuses to start instead of failing at the first share.
+  async startPublicMerged() {
+    const pct = Number(this.config.poolFeePercent);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 10) {
+      throw new Error(`POOL_FEE_PERCENT must be between 0 and 10, got ${this.config.poolFeePercent}`);
+    }
+    if (this.config.lockPayoutAddress) {
+      throw new Error('PUBLIC_MERGED=1 pays every miner at its own addresses; it cannot run with LOCK_PAYOUT_ADDRESS=1');
+    }
+    this.poolFeePercent = pct;
+    const probe = pm.buildAuxBlock(
+      await this.rpc.call('getblocktemplate'),
+      this.payoutScript, this.payoutScript, pct, this.config.coinbaseTag
+    );
+    if (probe.chainid !== DOGE_CHAIN_ID) {
+      throw new Error(`the aux node does not describe chain ${DOGE_CHAIN_ID}`);
+    }
+    this.log(
+      `PUBLIC merged mining: each miner is paid at the LTC and DOGE addresses in its username; ` +
+        `pool fee ${pct}% to ${this.config.ltcPayoutAddress} (LTC) and ${this.config.payoutAddress} (DOGE)`
+    );
+  }
+
+  // The Dogecoin half of a merged refresh. Private mode: dogecoind's own aux
+  // block, exactly as before. Public mode: a Dogecoin template that the pool
+  // builds one block per miner from.
+  //
+  // The template is REUSED until the Dogecoin tip moves, or its fees grew and
+  // the job is due a rebuild anyway. A fresh getblocktemplate carries a new
+  // curtime, hence a new aux hash; treating that as a new block would send
+  // every miner clean_jobs every poll and throw their work away. This is the
+  // same caching dogecoind itself applies to createauxblock.
+  async fetchAuxBlock() {
+    if (!this.publicMerged) {
+      return this.rpc.call('createauxblock', [this.config.payoutAddress]);
+    }
+    const fresh = await this.rpc.call('getblocktemplate');
+    const cur = this.currentJob && this.currentJob.dogeTemplate;
+    let template = fresh;
+    if (cur && cur.previousblockhash === fresh.previousblockhash) {
+      const age = Date.now() - (this.currentJob.createdAt || 0);
+      const worthIt = fresh.coinbasevalue > cur.coinbasevalue && age >= this.config.jobRebuildMs;
+      if (!worthIt) template = cur;
+    }
+    // The pool's own view of the block: miner and fee both at the pool's
+    // address. Only the hash, height and bits of it are used — for change
+    // detection and the dashboard. Every miner is handed its own variant.
+    const base = pm.buildAuxBlock(
+      template, this.payoutScript, this.payoutScript, this.poolFeePercent, this.config.coinbaseTag
+    );
+    base.dogeTemplate = template;
+    return base;
   }
 
   // Ask the node about every block we recorded but never resolved.
@@ -750,7 +818,7 @@ class Pool extends EventEmitter {
     // mempool moves, so this is cheap.
     let auxBlock = null;
     try {
-      auxBlock = await this.rpc.call('createauxblock', [this.config.payoutAddress]);
+      auxBlock = await this.fetchAuxBlock();
       if (this.auxUnavailableSince) {
         this.log(`the Dogecoin node is answering again after ${
           Math.round((Date.now() - this.auxUnavailableSince) / 1000)
@@ -901,7 +969,15 @@ class Pool extends EventEmitter {
     }
 
     const id = (++this.jobCounter).toString(16).padStart(8, '0');
-    const job = new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock);
+    const job = this.publicMerged
+      ? new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock, {
+          fee: { script: this.ltcPayoutScript, percent: this.poolFeePercent },
+        })
+      : new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock);
+    // Public mode: the Dogecoin template every miner's own aux block is built
+    // from. Kept on the job so a variant is always built from the same
+    // template as the job it belongs to.
+    if (this.publicMerged) job.dogeTemplate = auxBlock.dogeTemplate;
     // When this job's data was ASKED for, not when it was built: the ordering
     // guard above compares request times, and a slow RPC would otherwise make
     // a stale answer look newer than the fresh one it overtook.
@@ -975,7 +1051,33 @@ class Pool extends EventEmitter {
   // coinbase too — sending one coinbase and validating against another yields a
   // different merkle root and rejects every share the worker submits.
   clientJob(client, job) {
+    if (this.publicMerged) return this.publicJobForClient(job, client);
     return client.payoutScript ? this.jobForClient(job, client) : job;
+  }
+
+  // Public merged: the miner's own Litecoin coinbase (99% to it, the fee to
+  // the pool) committing to the miner's own Dogecoin block (the same split).
+  // Cached per address pair on the job, like jobForClient; the number of pairs
+  // is capped at authorize time.
+  publicJobForClient(job, client) {
+    if (!client.ltcPayoutScript || !client.payoutScript || !job.dogeTemplate) {
+      // Unreachable for an authorized public client; refusing is the only
+      // safe answer, because the base job pays the pool.
+      throw new Error('public merged job requested for a client without both payout addresses');
+    }
+    const key = `${client.ltcPayoutScript.toString('hex')}:${client.payoutScript.toString('hex')}`;
+    if (!job.variants) job.variants = new Map();
+    const cached = job.variants.get(key);
+    if (cached) return cached;
+    const auxBlock = pm.buildAuxBlock(
+      job.dogeTemplate, client.payoutScript, this.payoutScript, this.poolFeePercent, this.config.coinbaseTag
+    );
+    const variant = new MergedJob(job.id, job.template, client.ltcPayoutScript, this.config.coinbaseTag, auxBlock, {
+      fee: { script: this.ltcPayoutScript, percent: this.poolFeePercent },
+    });
+    variant.dogeTemplate = job.dogeTemplate;
+    job.variants.set(key, variant);
+    return variant;
   }
 
   async longPollLoop() {
@@ -1472,9 +1574,49 @@ class Pool extends EventEmitter {
     client.worker = String(username || 'worker')
       .replace(/[\u0000-\u001f\u007f]/g, '')
       .slice(0, 64) || 'worker';
-    client.authorized = true;
     client.payoutScript = null;
     client.payoutAddress = null;
+
+    if (this.publicMerged) {
+      // Parsed from the name BEFORE the 64-character display cut: two
+      // addresses and a dot are already 69 characters, so the truncated form
+      // would always carry a broken Dogecoin address.
+      const raw = String(username || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
+      const parsed = pm.parsePublicUsername(raw, this.ltcChain, this.chain);
+      if (!parsed.ok) {
+        this.churnLog(`worker refused: ${client.worker} from ${client.remote} — ${parsed.reason}`);
+        return this.reply(client, msg.id, false, [24, parsed.reason, null]);
+      }
+      const key = `${parsed.ltcScript.toString('hex')}:${parsed.dogeScript.toString('hex')}`;
+      const inUse = new Set();
+      for (const c of this.clients.values()) {
+        if (c !== client && c.authorized && c.ltcPayoutScript && c.payoutScript) {
+          inUse.add(`${c.ltcPayoutScript.toString('hex')}:${c.payoutScript.toString('hex')}`);
+        }
+      }
+      if (!inUse.has(key) && inUse.size >= this.config.maxPayoutVariants) {
+        this.churnLog(`worker refused: ${client.worker} — the pool is full (${inUse.size} address pairs)`);
+        return this.reply(client, msg.id, false, [24, 'pool is full, try again later', null]);
+      }
+      // Shown on the dashboard and used as the statistics key: the rig name
+      // and the Dogecoin address, which together fit the display limit.
+      client.worker = `${parsed.workerName ? `${parsed.workerName.slice(0, 20)}@` : ''}${parsed.dogeAddress}`.slice(0, 64);
+      client.ltcPayoutScript = parsed.ltcScript;
+      client.ltcPayoutAddress = parsed.ltcAddress;
+      client.payoutScript = parsed.dogeScript;
+      client.payoutAddress = parsed.dogeAddress;
+      client.authorized = true;
+      this.reply(client, msg.id, true);
+      this.churnLog(
+        `worker connected: ${client.worker} (#${client.id}) from ${client.remote} ` +
+          `paying LTC ${parsed.ltcAddress} / DOGE ${parsed.dogeAddress}`
+      );
+      this.setDifficulty(client, client.difficulty);
+      if (this.currentJob) this.sendJob(client, this.currentJob, true);
+      return;
+    }
+
+    client.authorized = true;
 
     // These miners put an address in the username field, so honour it: the
     // block a worker finds pays the address that worker asked for. Anything
@@ -1845,6 +1987,24 @@ class Pool extends EventEmitter {
       return;
     }
 
+    if (this.publicMerged) {
+      const blockHex = pm.serializeAuxBlock(job.auxBlock, Buffer.from(auxPowHex, 'hex'));
+      await this.submitCandidate({
+        chain: 'DOGE',
+        height: job.auxHeight,
+        hash: job.auxHash,
+        // The whole Dogecoin block this time, auxpow included: submitblock
+        // takes exactly this, so it is also what recovers it by hand.
+        hex: blockHex,
+        hexLabel: `BLOCK HEX chain=DOGE height=${job.auxHeight}`,
+        reward: job.auxValue,
+        address: client.payoutAddress,
+        worker: client.worker,
+        submit: () => this.submitWithRetries(blockHex, job.auxHeight),
+      });
+      return;
+    }
+
     await this.submitCandidate({
       chain: 'DOGE',
       height: job.auxHeight,
@@ -1863,9 +2023,11 @@ class Pool extends EventEmitter {
   async submitBlockInner(job, result, client) {
     // In merged mode this block is the LITECOIN one, and it pays the Litecoin
     // address; a worker's own address is refused at authorize time there.
-    const address = this.merged
-      ? this.config.ltcPayoutAddress
-      : client.payoutAddress || this.config.payoutAddress;
+    const address = this.publicMerged
+      ? client.ltcPayoutAddress
+      : this.merged
+        ? this.config.ltcPayoutAddress
+        : client.payoutAddress || this.config.payoutAddress;
     await this.submitCandidate({
       chain: this.merged ? 'LTC' : 'DOGE',
       height: job.height,

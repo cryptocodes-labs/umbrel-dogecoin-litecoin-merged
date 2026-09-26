@@ -177,6 +177,40 @@ against assumptions:
 - `test/browser_check.js` renders the dashboard in Chromium and fails on any
   console error, CSP violation or horizontal overflow.
 
+## A public port (PUBLIC_MERGED)
+
+The app itself is for your own miners: in merged mode both rewards always go to
+your configured addresses. A **public** port — one strangers mine on, each paid
+at their own addresses — runs as a *separate* container of the same image,
+next to the app, never instead of it:
+
+| Variable | Value |
+| --- | --- |
+| `MERGED_MINING` | `1` |
+| `PUBLIC_MERGED` | `1` |
+| `POOL_FEE_PERCENT` | `1` (0–10) |
+| `PAYOUT_ADDRESS` / `LTC_PAYOUT_ADDRESS` | where the **fee** goes |
+| `MAX_PAYOUT_VARIANTS` | how many distinct miners (address pairs) at once, e.g. `64` |
+
+Miners use the username `<LTC address>.<DOGE address>[.rigname]`; legacy
+(`L…`/`M…`/`3…`) and native segwit (`ltc1q…`) Litecoin addresses both work.
+A name without two valid addresses is refused at authorize, so no reward can
+end up somewhere nobody asked for.
+
+How it differs from the private mode: `createauxblock` can only pay one
+address, so in public mode the pool builds each miner's Dogecoin block itself
+from `getblocktemplate` — 99% to the miner, the fee to you — and hands it in
+with `submitblock`, auxpow included. The Litecoin coinbase is split the same
+way. `LOCK_PAYOUT_ADDRESS` and `RENTED_STRATUM_PORT` are refused in this mode.
+
+Proven against the daemons by `test/public_aux_regtest.js` (a self-built,
+fee-paying aux block accepted on both chains, non-empty mempools),
+`test/public_merged_pool.js` (two strangers through the wire protocol; the
+winner is paid 99/1 on both chains, the other nothing) and
+`test/public_coexist.js` (the private app and the public container on the same
+two nodes). `test/public_unit.js` covers the pure parts in CI, including that
+the private mode's coinbase is unchanged byte for byte.
+
 ## Ports
 
 | Port | What | Forward on your router? |
