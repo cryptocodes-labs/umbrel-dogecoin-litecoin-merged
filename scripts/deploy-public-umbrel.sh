@@ -33,6 +33,11 @@ MERGED_MINING=1
 PUBLIC_MERGED=1
 POOL_FEE_PERCENT=1
 MAX_PAYOUT_VARIANTS=64
+# All public traffic reaches the pool from ONE address (HAProxy on the VPS via
+# Tailscale), so the per-IP cap must not be the home default of 8; HAProxy
+# already limits per real client IP.
+MAX_CONNECTIONS=512
+MAX_CONNECTIONS_PER_IP=512
 MINING_PROFILE=home
 LOCK_PAYOUT_ADDRESS=0
 COINBASE_TAG=/cryptocode/

@@ -28,6 +28,7 @@ POOLS = [
     ("BCH", 3334, "bitcoincash:qp3wjpa3tjlj042z2wv7hahsldgwhwy0rq9sywjpyy.check"),
     ("BCH rental", 3337, "bitcoincash:qp3wjpa3tjlj042z2wv7hahsldgwhwy0rq9sywjpyy.check"),
     ("LTC+DOGE", 3335, "LUEweDxDA4WhvWiNXXSxjM9CYzHPJv4QQF.DEA5vGb2NpAwCiCp5yTE16F3DueQUVivQp.check"),
+    ("LTC+DOGE rental", 3339, "LUEweDxDA4WhvWiNXXSxjM9CYzHPJv4QQF.DEA5vGb2NpAwCiCp5yTE16F3DueQUVivQp.check"),
 ]
 
 
