@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SRC=~/doge-public-src
-IMG=cryptocode/doge-public:1.8.0
+IMG=cryptocode/doge-public:1.8.1
 APP=doge-dogecoin-solo_app_1
 DIR=~/doge-public
 

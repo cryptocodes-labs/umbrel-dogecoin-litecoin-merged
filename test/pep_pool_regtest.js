@@ -225,6 +225,15 @@ async function connectMiner(port, username) {
   const B = await connectMiner(STRATUM_PORT + 10, `${bLtc}.${bDoge}.rig2`);
   check('miner A (LTC.DOGE.PEP.rig) is authorized', A.auth.result === true, JSON.stringify(A.auth));
   check('miner B (LTC.DOGE.rig) is authorized', B.auth.result === true, JSON.stringify(B.auth));
+  {
+    const ws = pool.snapshot().workers;
+    const wA = ws.find((w) => w.payoutAddress === aDoge);
+    const wB = ws.find((w) => w.payoutAddress === bDoge);
+    check("the snapshot gives A's Pepecoin and Litecoin addresses",
+      wA && wA.pepPayoutAddress === aPep && wA.ltcPayoutAddress === aLtc, JSON.stringify(wA));
+    check("and B's pepPayoutAddress is null", wB && wB.pepPayoutAddress === null && wB.ltcPayoutAddress === bLtc,
+      JSON.stringify(wB));
+  }
   const nA = await A.m.waitForNotify();
   const nB = await B.m.waitForNotify();
 

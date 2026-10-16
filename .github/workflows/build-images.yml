@@ -59,7 +59,7 @@ jobs:
             tag: "1.1.0-1"
           - name: umbrel-dogecoin-stratum
             context: images/stratum
-            tag: "1.8.0"
+            tag: "1.8.1"
     steps:
       - uses: actions/checkout@v4
 

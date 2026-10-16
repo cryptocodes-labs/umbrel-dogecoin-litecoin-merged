@@ -70,6 +70,9 @@ jobs:
       - name: Several aux chains under one parent (chain merkle tree)
         run: node test/multi_aux_unit.js
 
+      - name: Which workers mine Pepecoin, per the status snapshot
+        run: node test/pep_snapshot_unit.js
+
       - name: Node alarm state machine
         run: node test/health.js
 

@@ -5,7 +5,7 @@ category: bitcoin
 # Litecoin Solo Mining" was shown as "Dogecoin + Litecoi…", which loses the one
 # word that says what the app is for.
 name: DOGE + LTC Solo
-version: "1.8.0"
+version: "1.8.1"
 tagline: Solo mine Dogecoin, or merge-mine Dogecoin and Litecoin, on your own nodes
 description: >-
   A stratum server that turns your Dogecoin node into a solo mining pool of one.
@@ -57,6 +57,11 @@ deterministicPassword: false
 torOnly: false
 installSize: 200000000
 releaseNotes: >-
+  The status API now reports, per worker, whether it mines Pepecoin: pepPayoutAddress (and
+  ltcPayoutAddress) carry the addresses from a public LTC.DOGE[.PEP][.rig] username, and are null
+  on the private port or when no Pepecoin address was given. Mining and payouts are unchanged.
+
+
   Optional Pepecoin merge mining, beside Dogecoin, under the same Litecoin work. Set PEP_RPC_HOST
   (your Pepecoin Node, e.g. doge-pepecoin-node_pepecoind_1), PEP_RPC_PASSWORD and
   PEP_PAYOUT_ADDRESS in .env to turn it on; without them nothing changes. Pepecoin can never stop
