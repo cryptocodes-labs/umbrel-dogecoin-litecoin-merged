@@ -2522,6 +2522,12 @@ class Pool extends EventEmitter {
         rejected: c.rejected,
         bestShareDiff: c.bestShareDiff,
         payoutAddress: c.payoutAddress || this.config.payoutAddress,
+        // The worker's own Litecoin and Pepecoin addresses, from a public
+        // username. Null on the private port, and pepPayoutAddress is null for
+        // a public miner that gave no Pepecoin address: the pool overview
+        // counts only the miners that actually mine Pepecoin as PEP hashrate.
+        ltcPayoutAddress: c.ltcPayoutAddress || null,
+        pepPayoutAddress: c.pepPayoutAddress || null,
         connectedAt: c.connectedAt,
         lastShareAt: c.lastShareAt,
         latencyMs: c.latencyMs == null ? null : c.latencyMs,

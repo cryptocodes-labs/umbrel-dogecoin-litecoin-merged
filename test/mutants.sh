@@ -292,6 +292,14 @@ mutant "mweb: the presence flag is dropped" \
   "if (this.mweb) parts.push(Buffer.from(this.mweb, 'hex'));" \
   "test/mweb_serialisation.js"
 
+# The pool overview counts PEP hashrate over the workers that report a Pepecoin
+# address. Reporting the Litecoin one there would count every public miner.
+mutant "snapshot: a worker's Pepecoin address taken from the wrong field" \
+  "images/stratum/src/pool.js" \
+  "pepPayoutAddress: c.pepPayoutAddress || null," \
+  "pepPayoutAddress: c.ltcPayoutAddress || null," \
+  "test/pep_snapshot_unit.js"
+
 echo
 if [[ ${FAIL} -eq 0 ]]; then
   green "${PASS} mutant(s) planted, ${PASS} caught"
