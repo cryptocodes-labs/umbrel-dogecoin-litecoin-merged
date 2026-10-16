@@ -54,6 +54,9 @@ jobs:
           - name: umbrel-litecoin-core
             context: images/ltc-core
             tag: "0.21.5.8-1"
+          - name: umbrel-pepecoin-core
+            context: images/pep-core
+            tag: "1.1.0-1"
           - name: umbrel-dogecoin-stratum
             context: images/stratum
             tag: "1.7.0"

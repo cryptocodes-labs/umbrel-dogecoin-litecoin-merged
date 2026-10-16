@@ -1,0 +1,95 @@
+manifestVersion: 1
+id: doge-pepecoin-node
+category: bitcoin
+name: Pepecoin Node
+version: "1.1.0-1"
+tagline: Run your own Pepecoin full node, powered by Pepecoin Core
+description: >-
+  Run a full Pepecoin node on your Umbrel, powered by the official Pepecoin Core release binaries.
+
+
+  Your node independently downloads and validates every Pepecoin block and transaction, so you never have
+  to trust somebody else's server to tell you what happened on the network. Point your wallet at your own
+  node and no third party gets to see which addresses are yours.
+
+
+  Pepecoin is a Scrypt chain built on Dogecoin Core 1.14 and merge-mined under Litecoin, beside Dogecoin.
+  A merged-mining pool needs a Pepecoin node to hand out the Pepecoin block it commits to, and this app
+  is a good place to get one from — your own node, on your own machine.
+
+
+  The dashboard shows sync progress, connected peers, mempool, network hashrate and the RPC credentials
+  that wallets and other apps need. JSON-RPC and P2P are available to other Umbrel apps and to your local
+  network. Outbound connections can optionally be routed through Umbrel's Tor proxy.
+
+
+  The wallet is disabled by default — this is a validating node, and every wallet function that isn't
+  exposed is one that can't be abused. It can be turned back on; settings live in the compose file, and
+  your own pepecoin.conf lines go in pepecoin-custom.conf, which the app merges in on every start.
+
+
+  Runs pruned to about 4 GB of block data by default, plus the chainstate. Pruning only discards old
+  blocks — the UTXO set that validation and mining need is always kept in full. The Pepecoin project
+  publishes no chain size, so the reservation below is an estimate; the initial sync downloads the
+  whole chain over the network. Change PRUNE in the compose file for a full archival node.
+developer: Pepecoin Core developers
+website: https://pepecoin.com
+dependencies: []
+repo: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
+support: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/issues
+port: 33870
+icon: https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-pepecoin-node/icon.svg
+gallery: []
+path: ""
+defaultPassword: ""
+deterministicPassword: false
+torOnly: false
+installSize: 10000000000
+releaseNotes: >-
+  First release. Pepecoin Core 1.1.0 from the official signed binaries, pruned to 4 GB by default
+  because this node exists to validate the chain and hand out block templates, not to serve historic
+  blocks. RPC threads and work queue are raised above the defaults of 4 and 16, which a single mining
+  longpoll is enough to exhaust.
+widgets:
+  - id: "sync"
+    type: "text-with-progress"
+    refresh: "5s"
+    endpoint: "app:3000/api/widget/sync"
+    link: ""
+    example:
+      type: "text-with-progress"
+      link: ""
+      title: "Blockchain sync"
+      text: "83%"
+      progressLabel: "In progress"
+      progress: 0.83
+  - id: "stats"
+    type: "four-stats"
+    refresh: "10s"
+    endpoint: "app:3000/api/widget/stats"
+    link: ""
+    example:
+      type: "four-stats"
+      link: ""
+      items:
+        - title: "Connections"
+          text: "16"
+          subtext: "peers"
+        - title: "Mempool"
+          text: "4"
+          subtext: "txs"
+        - title: "Hashrate"
+          text: "2.1"
+          subtext: "PH/s"
+        - title: "Blockchain size"
+          text: "6"
+          subtext: "GB"
+backupIgnore:
+  - data/.pepecoin/blocks
+  - data/.pepecoin/chainstate
+  - data/.pepecoin/indexes
+  - data/.pepecoin/testnet3
+  - data/.pepecoin/regtest
+  - data/.pepecoin/debug.log
+submitter: Andreas
+submission: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged

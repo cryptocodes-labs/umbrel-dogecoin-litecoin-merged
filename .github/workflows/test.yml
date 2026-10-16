@@ -31,6 +31,12 @@ jobs:
           path: /tmp/dogecoin-*.tar.gz
           key: dogecoin-core-1.14.9-${{ runner.arch }}
 
+      - name: Cache the Pepecoin Core release tarball
+        uses: actions/cache@v4
+        with:
+          path: /tmp/pepecoin-*.tar.gz
+          key: pepecoin-core-1.1.0-${{ runner.arch }}
+
       - name: Cache the Litecoin Core release tarball
         uses: actions/cache@v4
         with:
@@ -147,6 +153,12 @@ jobs:
           dockerfile: images/ltc-core/Dockerfile
           failure-threshold: error
 
+      - name: Lint the Pepecoin node Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: images/pep-core/Dockerfile
+          failure-threshold: error
+
       - name: Lint the dashboard Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -161,9 +173,12 @@ jobs:
             images/core/healthcheck.sh \
             images/ltc-core/entrypoint.sh \
             images/ltc-core/healthcheck.sh \
+            images/pep-core/entrypoint.sh \
+            images/pep-core/healthcheck.sh \
             doge-dogecoin-node/exports.sh \
             doge-dogecoin-solo/exports.sh \
             doge-litecoin-node/exports.sh \
+            doge-pepecoin-node/exports.sh \
             scripts/*.sh \
             test/*.sh
 
@@ -192,6 +207,14 @@ jobs:
           push: false
           cache-from: type=gha,scope=ltc-core
           cache-to: type=gha,mode=max,scope=ltc-core
+      - name: Build pepecoind (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: images/pep-core
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=pep-core
+          cache-to: type=gha,mode=max,scope=pep-core
       - name: Build the stratum server (amd64 + arm64)
         uses: docker/build-push-action@v6
         with:

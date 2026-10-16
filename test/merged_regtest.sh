@@ -21,6 +21,8 @@ LTC_PEER_P2P="$((LTC_RPC + 3))"
 DOGE_RPC="${DOGE_RPC:-24555}"
 DOGE_P2P="$((DOGE_RPC + 1))"
 DOGE_PEER_RPC="$((DOGE_RPC + 2))"
+PEP_RPC="${PEP_RPC:-24655}"
+PEP_P2P="$((PEP_RPC + 1))"
 
 cleanup() {
   for d in "${WORK}/ltc" "${WORK}/ltcpeer"; do
@@ -29,6 +31,8 @@ cleanup() {
   for d in "${WORK}/doge" "${WORK}/dogepeer"; do
     "${WORK}/dogecoin/bin/dogecoin-cli" -regtest -datadir="${d}" stop >/dev/null 2>&1 || true
   done
+  "${WORK}/pepecoin/bin/pepecoin-cli" -regtest -datadir="${WORK}/pep" -rpcport="${PEP_RPC}" \
+    -rpcuser=test -rpcpassword=test stop >/dev/null 2>&1 || true
   sleep 2
   rm -rf "${WORK}"
 }
@@ -64,12 +68,14 @@ fetch litecoin "${REPO_ROOT}/images/ltc-core/Dockerfile" LITECOIN_VERSION \
   https://github.com/litecoin-project/litecoin/releases/download
 fetch dogecoin "${REPO_ROOT}/images/core/Dockerfile" DOGECOIN_VERSION \
   https://github.com/dogecoin/dogecoin/releases/download
+fetch pepecoin "${REPO_ROOT}/images/pep-core/Dockerfile" PEPECOIN_VERSION \
+  https://github.com/pepecoinppc/pepecoin/releases/download
 
 LTCD="${WORK}/litecoin/bin/litecoind"
 LTCC="${WORK}/litecoin/bin/litecoin-cli"
 DOGED="${WORK}/dogecoin/bin/dogecoind"
 DOGEC="${WORK}/dogecoin/bin/dogecoin-cli"
-mkdir -p "${WORK}/ltc" "${WORK}/ltcpeer" "${WORK}/doge" "${WORK}/dogepeer"
+mkdir -p "${WORK}/ltc" "${WORK}/ltcpeer" "${WORK}/doge" "${WORK}/dogepeer" "${WORK}/pep"
 
 # The suites log in as test/test, the default the .js files were written for.
 "${LTCD}" -regtest -datadir="${WORK}/ltc" -server=1 -listen=1 -port="${LTC_P2P}" \
@@ -113,7 +119,19 @@ doge_cli generate 80 >/dev/null
   -rpcuser=test -rpcpassword=test -rpcport="${DOGE_PEER_RPC}" \
   -connect="127.0.0.1:${DOGE_P2P}" -daemon >/dev/null
 for _ in $(seq 1 60); do [[ "$(doge_cli getconnectioncount 2>/dev/null)" == "1" ]] && break; sleep 1; done
-echo "litecoin height $(ltc_cli getblockcount), dogecoin height $(doge_cli getblockcount), dogecoin peers $(doge_cli getconnectioncount)"
+
+# Pepecoin regtest shares Dogecoin regtest's default ports AND its network
+# magic (src/chainparams.cpp, 1.1.0), so it gets its own ports and no P2P at
+# all: two daemons that speak the same magic must not find each other. Same
+# auxpow height (20) and coinbase maturity (60) as Dogecoin's regtest.
+"${WORK}/pepecoin/bin/pepecoind" -regtest -datadir="${WORK}/pep" -server=1 -listen=0 -dnsseed=0 \
+  -port="${PEP_P2P}" -rpcuser=test -rpcpassword=test -rpcport="${PEP_RPC}" -txindex=1 -daemon >/dev/null
+pep_cli() { "${WORK}/pepecoin/bin/pepecoin-cli" -regtest -datadir="${WORK}/pep" -rpcport="${PEP_RPC}" -rpcuser=test -rpcpassword=test "$@"; }
+for _ in $(seq 1 60); do pep_cli getblockcount >/dev/null 2>&1 && break; sleep 1; done
+echo "$(pep_cli -version | head -1)"
+pep_cli generate 80 >/dev/null
+
+echo "litecoin height $(ltc_cli getblockcount), dogecoin height $(doge_cli getblockcount), dogecoin peers $(doge_cli getconnectioncount), pepecoin height $(pep_cli getblockcount)"
 
 STRATUM_PORT="${STRATUM_PORT:-24600}"
 status=0
@@ -131,4 +149,12 @@ for suite in merged_regtest public_aux_regtest merged_pool public_merged_pool pu
   # template to carry it would otherwise see the previous suite's template.
   sleep 6
 done
+
+# Two aux chains under one parent: Dogecoin and Pepecoin from the same
+# Litecoin block, built by the pool's own MergedJob.
+if [[ -f "${REPO_ROOT}/test/pep_merged_regtest.js" ]]; then
+  echo
+  echo "== pep_merged_regtest"
+  node "${REPO_ROOT}/test/pep_merged_regtest.js" "${LTC_RPC}" "${DOGE_RPC}" "${PEP_RPC}" || status=1
+fi
 exit "${status}"
