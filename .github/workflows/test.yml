@@ -61,6 +61,9 @@ jobs:
       - name: Public merged mining, pure functions
         run: node test/public_unit.js
 
+      - name: Several aux chains under one parent (chain merkle tree)
+        run: node test/multi_aux_unit.js
+
       - name: Node alarm state machine
         run: node test/health.js
 

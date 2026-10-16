@@ -42,12 +42,37 @@ class MergedJob extends Job {
   constructor(id, template, payoutScript, tag, auxBlock, extra = {}) {
     // `extra.fee` ({ script, percent }) is set only by the public merged mode;
     // without it the coinbase below is byte-for-byte what it always was.
-    super(id, template, payoutScript, tag, { auxBlock, fee: extra.fee || null });
+    //
+    // `extra.extraAux` lists further aux chains merge-mined beside Dogecoin
+    // under the same parent: [{ name, chainId, block }], `block` shaped like a
+    // createauxblock answer (hash, bits, height, coinbasevalue). Empty or
+    // absent, the commitment is the single-chain one, byte for byte.
+    super(id, template, payoutScript, tag, {
+      auxBlock,
+      fee: extra.fee || null,
+      extraAux: Array.isArray(extra.extraAux) ? extra.extraAux : [],
+    });
 
     this.auxBlock = auxBlock;
     this.auxHash = auxBlock.hash;
     this.auxHeight = auxBlock.height;
     this.auxValue = auxBlock.coinbasevalue;
+
+    // Every further aux chain is judged against ITS OWN target, from its own
+    // `bits`, for the same reason Dogecoin's is (see below).
+    this.extraAux = this.opts.extraAux.map((a) => {
+      const target = u.targetFromBits(a.block.bits);
+      return {
+        name: a.name,
+        chainId: a.chainId,
+        block: a.block,
+        hash: a.block.hash,
+        height: a.block.height,
+        value: a.block.coinbasevalue,
+        target,
+        difficulty: u.difficultyFromTarget(target),
+      };
+    });
 
     // BOTH targets come from `bits`, and neither from a target string.
     // litecoind reports getblocktemplate.target big-endian while dogecoind
@@ -76,12 +101,18 @@ class MergedJob extends Job {
       u.coinbaseHeightScript(this.height),
       Buffer.from((this.template.coinbaseaux && this.template.coinbaseaux.flags) || '', 'hex'),
     ]);
-    // Nonce 0: with a single aux chain the expected index is 0 for every nonce
-    // (getExpectedIndex mod 2^0), so rolling it would buy nothing and only add
-    // a way to get it wrong.
+    // One commitment for every aux chain: the root of the chain merkle tree.
+    // With Dogecoin alone the tree is that one leaf — root = its block hash,
+    // size 1, nonce 0 (getExpectedIndex mod 2^0 is 0 for every nonce) — which
+    // is exactly the commitment this pool has always written. A further chain
+    // grows the tree to two leaves; the commitment stays 44 bytes.
+    this.chainTree = aux.buildChainTree([
+      { chainId: DOGE_CHAIN_ID, hash: auxBlock.hash },
+      ...this.opts.extraAux.map((a) => ({ chainId: a.chainId, hash: a.block.hash })),
+    ]);
     const suffix = Buffer.concat([
       Buffer.from(tag, 'utf8'),
-      aux.auxCommitment(auxBlock.hash, 0),
+      aux.auxCommitment(this.chainTree.root, this.chainTree.nonce, this.chainTree.size),
     ]);
 
     const scriptSigLength =
@@ -175,16 +206,29 @@ class MergedJob extends Job {
     return Buffer.concat(parts).toString('hex');
   }
 
-  /** The proof Dogecoin needs, as hex. Non-witness coinbase, deliberately. */
-  auxPowHex(header, coinbase) {
+  /**
+   * The proof an aux chain needs, as hex — Dogecoin's unless another chain id
+   * is given. Non-witness coinbase, deliberately. Every chain gets the same
+   * parent proof and its own path through the chain merkle tree.
+   */
+  auxPowHex(header, coinbase, chainId = DOGE_CHAIN_ID) {
+    const proof = this.chainTree.proofs.get(chainId);
+    if (!proof) throw new Error(`chain ${chainId} is not merge-mined in this job`);
     return aux
       .serializeAuxPow({
         coinbaseTx: coinbase,
         parentBlockHash: u.reverseBuffer(u.sha256d(header)).toString('hex'),
         merkleBranch: this.merkleSteps,
         parentHeader: header,
+        chainBranch: proof.branch,
+        chainIndex: proof.index,
       })
       .toString('hex');
+  }
+
+  /** The further aux chains whose target this proof of work meets. */
+  extraAuxCandidates(powValue) {
+    return this.extraAux.filter((a) => powValue <= a.target);
   }
 
   /**
@@ -197,14 +241,23 @@ class MergedJob extends Job {
    * the Litecoin block is still perfectly good.
    */
   verifyAgainstDogecoin(header, coinbase) {
+    return this.verifyAux(header, coinbase, DOGE_CHAIN_ID, this.auxHash);
+  }
+
+  /** The same rule check for any aux chain in this job. */
+  verifyAux(header, coinbase, chainId, auxHashHex) {
+    const proof = this.chainTree.proofs.get(chainId);
+    if (!proof) return { ok: false, problems: [`chain ${chainId} is not merge-mined in this job`] };
     return aux.verifyAuxPow({
       scriptSig: this.scriptSigOf(coinbase),
-      auxHashHex: this.auxHash,
-      chainId: DOGE_CHAIN_ID,
+      auxHashHex,
+      chainId,
       coinbaseTxid: u.reverseBuffer(u.sha256d(coinbase)).toString('hex'),
       merkleBranch: this.merkleSteps,
       parentMerkleRoot: u.reverseBuffer(header.subarray(36, 68)).toString('hex'),
       parentVersion: this.version,
+      chainBranch: proof.branch,
+      chainIndex: proof.index,
     });
   }
 }
