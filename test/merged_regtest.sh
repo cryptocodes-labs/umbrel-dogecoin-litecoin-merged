@@ -20,12 +20,15 @@ LTC_PEER_RPC="$((LTC_RPC + 2))"
 LTC_PEER_P2P="$((LTC_RPC + 3))"
 DOGE_RPC="${DOGE_RPC:-24555}"
 DOGE_P2P="$((DOGE_RPC + 1))"
+DOGE_PEER_RPC="$((DOGE_RPC + 2))"
 
 cleanup() {
   for d in "${WORK}/ltc" "${WORK}/ltcpeer"; do
     "${WORK}/litecoin/bin/litecoin-cli" -regtest -datadir="${d}" stop >/dev/null 2>&1 || true
   done
-  "${WORK}/dogecoin/bin/dogecoin-cli" -regtest -datadir="${WORK}/doge" stop >/dev/null 2>&1 || true
+  for d in "${WORK}/doge" "${WORK}/dogepeer"; do
+    "${WORK}/dogecoin/bin/dogecoin-cli" -regtest -datadir="${d}" stop >/dev/null 2>&1 || true
+  done
   sleep 2
   rm -rf "${WORK}"
 }
@@ -66,12 +69,12 @@ LTCD="${WORK}/litecoin/bin/litecoind"
 LTCC="${WORK}/litecoin/bin/litecoin-cli"
 DOGED="${WORK}/dogecoin/bin/dogecoind"
 DOGEC="${WORK}/dogecoin/bin/dogecoin-cli"
-mkdir -p "${WORK}/ltc" "${WORK}/ltcpeer" "${WORK}/doge"
+mkdir -p "${WORK}/ltc" "${WORK}/ltcpeer" "${WORK}/doge" "${WORK}/dogepeer"
 
 # The suites log in as test/test, the default the .js files were written for.
 "${LTCD}" -regtest -datadir="${WORK}/ltc" -server=1 -listen=1 -port="${LTC_P2P}" \
   -rpcuser=test -rpcpassword=test -rpcport="${LTC_RPC}" -fallbackfee=0.0001 -daemon >/dev/null
-"${DOGED}" -regtest -datadir="${WORK}/doge" -server=1 -listen=0 -port="${DOGE_P2P}" \
+"${DOGED}" -regtest -datadir="${WORK}/doge" -server=1 -listen=1 -port="${DOGE_P2P}" \
   -rpcuser=test -rpcpassword=test -rpcport="${DOGE_RPC}" -txindex=1 -daemon >/dev/null
 
 ltc_cli()  { "${LTCC}" -regtest -datadir="${WORK}/ltc" -rpcport="${LTC_RPC}" -rpcuser=test -rpcpassword=test "$@"; }
@@ -96,6 +99,21 @@ ltc_cli createwallet pool >/dev/null
 peer_cli generatetoaddress 2 "$(peer_cli getnewaddress)" >/dev/null
 for _ in $(seq 1 30); do [[ "$(ltc_cli getblockcount)" -ge 2 ]] && break; sleep 1; done
 [[ "$(ltc_cli getblockcount)" -ge 2 ]] || { echo "litecoind never received the peer's blocks"; exit 1; }
+# One coinbase past Litecoin's 100-block maturity, so the public suite can put
+# a real transaction in the mempool and exercise a non-trivial merkle path.
+ltc_cli generatetoaddress 101 "$(ltc_cli getnewaddress)" >/dev/null
+
+# Dogecoin regtest (src/chainparams.cpp, v1.14.9): auxpow becomes valid at
+# height 20 and coinbases mature after 60 blocks. 80 clears both.
+doge_cli generate 80 >/dev/null
+# dogecoind 1.14.9 refuses getblocktemplate without peers even on regtest
+# (createauxblock is exempt), and the public suite builds its own Dogecoin
+# block from a template — so it gets a peer too.
+"${DOGED}" -regtest -datadir="${WORK}/dogepeer" -server=1 -listen=0 -disablewallet=1 \
+  -rpcuser=test -rpcpassword=test -rpcport="${DOGE_PEER_RPC}" \
+  -connect="127.0.0.1:${DOGE_P2P}" -daemon >/dev/null
+for _ in $(seq 1 60); do [[ "$(doge_cli getconnectioncount 2>/dev/null)" == "1" ]] && break; sleep 1; done
+echo "litecoin height $(ltc_cli getblockcount), dogecoin height $(doge_cli getblockcount), dogecoin peers $(doge_cli getconnectioncount)"
 
 status=0
 for suite in merged_regtest public_aux_regtest; do
