@@ -27,6 +27,8 @@ const { splitReward } = require('./public-merged');
 // Dogecoin's chain ID, from its consensus parameters. Used to re-run the aux
 // rules against our own proof before it is submitted.
 const DOGE_CHAIN_ID = 98;
+// Pepecoin's, from src/chainparams.cpp (1.1.0): 0x3f on every network.
+const PEP_CHAIN_ID = 63;
 
 // litecoind refuses getblocktemplate unless the caller declares it understands
 // the deployed rules. Without mweb it answers "getblocktemplate must be called
@@ -283,4 +285,4 @@ function withWitness(tx) {
   ]);
 }
 
-module.exports = { MergedJob, withWitness, LTC_RULES, DOGE_CHAIN_ID };
+module.exports = { MergedJob, withWitness, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID };

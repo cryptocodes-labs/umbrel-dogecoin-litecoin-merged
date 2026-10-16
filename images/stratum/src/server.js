@@ -183,6 +183,28 @@ const config = {
   publicMerged: process.env.PUBLIC_MERGED === '1',
   poolFeePercent: Number(process.env.POOL_FEE_PERCENT || 1),
 
+  // Pepecoin, a further aux chain merge-mined beside Dogecoin (needs
+  // MERGED_MINING=1). On only when PEP_RPC_HOST and PEP_PAYOUT_ADDRESS are both
+  // set; without them nothing below exists and the pool is exactly what it was.
+  // Optional by design: pepecoind being down, slow or misconfigured leaves
+  // Pepecoin out of the jobs and never stops Litecoin or Dogecoin. Private
+  // mode pays every Pepecoin block to PEP_PAYOUT_ADDRESS; public mode pays the
+  // miners who add a Pepecoin address to their username, and takes the same
+  // POOL_FEE_PERCENT for PEP_PAYOUT_ADDRESS.
+  pep:
+    process.env.PEP_RPC_HOST && (process.env.PEP_PAYOUT_ADDRESS || '').trim()
+      ? {
+          rpc: {
+            host: process.env.PEP_RPC_HOST,
+            port: num('PEP_RPC_PORT', 33873),
+            user: process.env.PEP_RPC_USER || 'umbrel',
+            password: process.env.PEP_RPC_PASSWORD || '',
+          },
+          payoutAddress: (process.env.PEP_PAYOUT_ADDRESS || '').trim(),
+        }
+      : null,
+  pepPollMs: Math.max(500, num('PEP_POLL_MS', 2000)),
+
   stratumPort: STRATUM_PORT,
   // Stratum-space difficulties (scrypt, so one share costs D * 2^16 hashes).
   // 2048 lands a 11 MH/s miner at ~12s per share and a 70 MH/s miner at ~2s,
@@ -306,9 +328,9 @@ if (config.publicMerged && !config.mergedMining) {
 // profile is only useful if it actually reaches the pool, and asserting that
 // from outside the process is the only test that proves it.
 if (process.env.DUMP_CONFIG === '1') {
-  // ltcRpc goes the same way as rpc: it carries a password.
-  const { rpc, payoutAddress, ltcRpc, ltcPayoutAddress, ...safe } = config;
-  console.log(`CONFIG ${JSON.stringify(safe)}`);
+  // ltcRpc goes the same way as rpc: it carries a password. So does pep.
+  const { rpc, payoutAddress, ltcRpc, ltcPayoutAddress, pep, ...safe } = config;
+  console.log(`CONFIG ${JSON.stringify({ ...safe, pep: pep ? { host: pep.rpc.host, port: pep.rpc.port } : null })}`);
   process.exit(0);
 }
 

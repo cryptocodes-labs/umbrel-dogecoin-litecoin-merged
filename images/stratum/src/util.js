@@ -189,6 +189,11 @@ const ADDRESS_VERSIONS = {
   'ltc-main': { p2pkh: [0x30], p2sh: [0x32, 0x05] },
   'ltc-test': { p2pkh: [0x6f], p2sh: [0x3a, 0xc4] },
   'ltc-regtest': { p2pkh: [0x6f], p2sh: [0x3a, 0xc4] },
+  // Pepecoin, a further aux chain: src/chainparams.cpp (1.1.0) base58Prefixes.
+  // 56 is "P" on mainnet; regtest uses 111/196 like Bitcoin's testnet.
+  'pep-main': { p2pkh: [0x38], p2sh: [0x16] },
+  'pep-test': { p2pkh: [0x71], p2sh: [0xc4] },
+  'pep-regtest': { p2pkh: [0x6f], p2sh: [0xc4] },
 };
 
 // Litecoin native segwit (BIP173): ltc1… on mainnet. Most Litecoin wallets

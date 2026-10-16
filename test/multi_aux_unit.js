@@ -186,5 +186,57 @@ console.log('\nMergedJob with PEP');
   check('a share missing it is not', job.extraAuxCandidates(u.targetFromBits('207fffff') + 1n).length === 0);
 }
 
+console.log('\npublic usernames with an optional Pepecoin address');
+{
+  const pm = require('../images/stratum/src/public-merged');
+  const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const b58 = (buf) => {
+    let n = BigInt('0x' + buf.toString('hex'));
+    let s = '';
+    while (n > 0n) { s = B58[Number(n % 58n)] + s; n /= 58n; }
+    for (const byte of buf) { if (byte === 0) s = '1' + s; else break; }
+    return s;
+  };
+  const addr = (version) => {
+    const body = Buffer.concat([Buffer.from([version]), crypto.randomBytes(20)]);
+    return b58(Buffer.concat([body, u.sha256d(body).subarray(0, 4)]));
+  };
+  const ltc = addr(0x30);   // L… on Litecoin mainnet
+  const doge = addr(0x1e);  // D… on Dogecoin mainnet
+  const pep = addr(0x38);   // P… on Pepecoin mainnet (src/chainparams.cpp: 56)
+  check('a Pepecoin mainnet address starts with P', pep[0] === 'P', pep);
+
+  const without = pm.parsePublicUsername(`${ltc}.${doge}.rig1`, 'ltc-main', 'main', 'pep-main');
+  check('LTC.DOGE.rig: no Pepecoin, rig name kept', without.ok && without.pepScript === null && without.workerName === 'rig1');
+  const off = pm.parsePublicUsername(`${ltc}.${doge}.${pep}.rig1`, 'ltc-main', 'main', null);
+  check('with Pepecoin off the name reads exactly as before', off.ok && off.pepScript === null && off.workerName === `${pep}.rig1`);
+  const withPep = pm.parsePublicUsername(`${ltc}.${doge}.${pep}.rig1`, 'ltc-main', 'main', 'pep-main');
+  check('LTC.DOGE.PEP.rig: Pepecoin address and rig both read',
+    withPep.ok && withPep.pepAddress === pep && withPep.workerName === 'rig1' &&
+    withPep.pepScript.equals(u.addressToScript(pep, 'pep-main')));
+  const noRig = pm.parsePublicUsername(`${ltc}.${doge}.${pep}`, 'ltc-main', 'main', 'pep-main');
+  check('LTC.DOGE.PEP without a rig', noRig.ok && noRig.pepAddress === pep && noRig.workerName === null);
+  const typo = pm.parsePublicUsername(`${ltc}.${doge}.${pep.slice(0, -1)}X`, 'ltc-main', 'main', 'pep-main');
+  check('a mistyped Pepecoin address is refused, not taken for a rig name', !typo.ok && /Pepecoin/.test(typo.reason), typo.reason);
+  const dogeAsPep = pm.parsePublicUsername(`${ltc}.${doge}.${addr(0x1e)}`, 'ltc-main', 'main', 'pep-main');
+  check('a Dogecoin address in the Pepecoin slot is refused', !dogeAsPep.ok);
+}
+
+console.log('\nbuildAuxBlock for Pepecoin');
+{
+  const pm = require('../images/stratum/src/public-merged');
+  const pepTemplate = {
+    version: 0x3f0004, previousblockhash: hex32(), curtime: 1786000000, bits: '207fffff',
+    height: 500, coinbasevalue: 1000000000000, transactions: [],
+  };
+  const script = u.addressToScript('mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn', 'pep-regtest');
+  const b = pm.buildAuxBlock(pepTemplate, script, script, 1, '/t/', 63);
+  check('a chain-63 template builds a chain-63 aux block', b.chainid === 63 && (b.header.readUInt32LE(0) >>> 16) === 63);
+  check('with the auxpow flag set', (b.header.readUInt32LE(0) & 0x100) !== 0);
+  let threw = false;
+  try { pm.buildAuxBlock(pepTemplate, script, script, 1, '/t/'); } catch { threw = true; }
+  check('the same template is refused as a Dogecoin one', threw);
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures === 0 ? 0 : 1);

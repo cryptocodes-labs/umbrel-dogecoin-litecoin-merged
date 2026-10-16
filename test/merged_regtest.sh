@@ -23,6 +23,7 @@ DOGE_P2P="$((DOGE_RPC + 1))"
 DOGE_PEER_RPC="$((DOGE_RPC + 2))"
 PEP_RPC="${PEP_RPC:-24655}"
 PEP_P2P="$((PEP_RPC + 1))"
+PEP_PEER_RPC="$((PEP_RPC + 2))"
 
 cleanup() {
   for d in "${WORK}/ltc" "${WORK}/ltcpeer"; do
@@ -33,6 +34,8 @@ cleanup() {
   done
   "${WORK}/pepecoin/bin/pepecoin-cli" -regtest -datadir="${WORK}/pep" -rpcport="${PEP_RPC}" \
     -rpcuser=test -rpcpassword=test stop >/dev/null 2>&1 || true
+  "${WORK}/pepecoin/bin/pepecoin-cli" -regtest -datadir="${WORK}/peppeer" -rpcport="${PEP_PEER_RPC}" \
+    -rpcuser=peer -rpcpassword=peer stop >/dev/null 2>&1 || true
   sleep 2
   rm -rf "${WORK}"
 }
@@ -75,7 +78,7 @@ LTCD="${WORK}/litecoin/bin/litecoind"
 LTCC="${WORK}/litecoin/bin/litecoin-cli"
 DOGED="${WORK}/dogecoin/bin/dogecoind"
 DOGEC="${WORK}/dogecoin/bin/dogecoin-cli"
-mkdir -p "${WORK}/ltc" "${WORK}/ltcpeer" "${WORK}/doge" "${WORK}/dogepeer" "${WORK}/pep"
+mkdir -p "${WORK}/ltc" "${WORK}/ltcpeer" "${WORK}/doge" "${WORK}/dogepeer" "${WORK}/pep" "${WORK}/peppeer"
 
 # The suites log in as test/test, the default the .js files were written for.
 "${LTCD}" -regtest -datadir="${WORK}/ltc" -server=1 -listen=1 -port="${LTC_P2P}" \
@@ -121,17 +124,22 @@ doge_cli generate 80 >/dev/null
 for _ in $(seq 1 60); do [[ "$(doge_cli getconnectioncount 2>/dev/null)" == "1" ]] && break; sleep 1; done
 
 # Pepecoin regtest shares Dogecoin regtest's default ports AND its network
-# magic (src/chainparams.cpp, 1.1.0), so it gets its own ports and no P2P at
-# all: two daemons that speak the same magic must not find each other. Same
-# auxpow height (20) and coinbase maturity (60) as Dogecoin's regtest.
-"${WORK}/pepecoin/bin/pepecoind" -regtest -datadir="${WORK}/pep" -server=1 -listen=0 -dnsseed=0 \
-  -port="${PEP_P2P}" -rpcuser=test -rpcpassword=test -rpcport="${PEP_RPC}" -txindex=1 -daemon >/dev/null
+# magic (src/chainparams.cpp, 1.1.0), so it gets its own ports and its peer is
+# pointed at it explicitly: two daemons that speak the same magic must only
+# ever meet their own kind. Same auxpow height (20) and coinbase maturity (60)
+# as Dogecoin's regtest, and the same getblocktemplate peer requirement — the
+# public mode builds Pepecoin blocks from a template, so it needs the peer.
+"${WORK}/pepecoin/bin/pepecoind" -regtest -datadir="${WORK}/pep" -server=1 -listen=1 -dnsseed=0 \
+  -bind=127.0.0.1 -port="${PEP_P2P}" -rpcuser=test -rpcpassword=test -rpcport="${PEP_RPC}" -txindex=1 -daemon >/dev/null
 pep_cli() { "${WORK}/pepecoin/bin/pepecoin-cli" -regtest -datadir="${WORK}/pep" -rpcport="${PEP_RPC}" -rpcuser=test -rpcpassword=test "$@"; }
 for _ in $(seq 1 60); do pep_cli getblockcount >/dev/null 2>&1 && break; sleep 1; done
 echo "$(pep_cli -version | head -1)"
 pep_cli generate 80 >/dev/null
+"${WORK}/pepecoin/bin/pepecoind" -regtest -datadir="${WORK}/peppeer" -server=1 -listen=0 -dnsseed=0 -disablewallet=1 \
+  -rpcuser=peer -rpcpassword=peer -rpcport="${PEP_PEER_RPC}" -connect="127.0.0.1:${PEP_P2P}" -daemon >/dev/null
+for _ in $(seq 1 60); do [[ "$(pep_cli getconnectioncount 2>/dev/null)" == "1" ]] && break; sleep 1; done
 
-echo "litecoin height $(ltc_cli getblockcount), dogecoin height $(doge_cli getblockcount), dogecoin peers $(doge_cli getconnectioncount), pepecoin height $(pep_cli getblockcount)"
+echo "litecoin height $(ltc_cli getblockcount), dogecoin height $(doge_cli getblockcount), dogecoin peers $(doge_cli getconnectioncount), pepecoin height $(pep_cli getblockcount), pepecoin peers $(pep_cli getconnectioncount)"
 
 STRATUM_PORT="${STRATUM_PORT:-24600}"
 status=0
@@ -156,5 +164,12 @@ if [[ -f "${REPO_ROOT}/test/pep_merged_regtest.js" ]]; then
   echo
   echo "== pep_merged_regtest"
   node "${REPO_ROOT}/test/pep_merged_regtest.js" "${LTC_RPC}" "${DOGE_RPC}" "${PEP_RPC}" || status=1
+fi
+# Last, because its final part stops pepecoind on purpose.
+if [[ -f "${REPO_ROOT}/test/pep_pool_regtest.js" ]]; then
+  sleep 6
+  echo
+  echo "== pep_pool_regtest"
+  node "${REPO_ROOT}/test/pep_pool_regtest.js" "${LTC_RPC}" "${DOGE_RPC}" "${PEP_RPC}" "${STRATUM_PORT}" || status=1
 fi
 exit "${status}"

@@ -66,11 +66,14 @@ function outputBuf(value, script) {
  * coinbasevalue, bits, previousblockhash, chainid — so MergedJob consumes it
  * unchanged, plus what submission needs to rebuild the block.
  */
-function buildAuxBlock(template, minerScript, feeScript, feePercent, tag) {
+function buildAuxBlock(template, minerScript, feeScript, feePercent, tag, chainId = DOGE_CHAIN_ID) {
+  // `chainId` names the aux chain whose block this is. Dogecoin by default;
+  // Pepecoin (63) is built the same way — it is Dogecoin Core 1.14 underneath,
+  // with the same block layout and the same auxpow code.
   const version = (template.version | VERSION_AUXPOW) >>> 0;
-  if (((version >>> 16) & 0xffff) !== DOGE_CHAIN_ID) {
+  if (((version >>> 16) & 0xffff) !== chainId) {
     throw new Error(
-      `the Dogecoin template version 0x${version.toString(16)} does not carry chain id ${DOGE_CHAIN_ID}`
+      `the aux template version 0x${version.toString(16)} does not carry chain id ${chainId}`
     );
   }
 
@@ -119,7 +122,7 @@ function buildAuxBlock(template, minerScript, feeScript, feePercent, tag) {
     // Display order — the form createauxblock reports and CAuxPow::check()
     // searches the parent coinbase for.
     hash: u.reverseBuffer(u.sha256d(header)).toString('hex'),
-    chainid: DOGE_CHAIN_ID,
+    chainid: chainId,
     previousblockhash: template.previousblockhash,
     coinbasevalue: template.coinbasevalue,
     bits: template.bits,
@@ -152,7 +155,7 @@ function serializeAuxBlock(auxBlock, auxPow) {
  * nobody it would be right to pay. Returns {ok:false, reason} instead of
  * guessing.
  */
-function parsePublicUsername(username, ltcChain, dogeChain) {
+function parsePublicUsername(username, ltcChain, dogeChain, pepChain = null) {
   const parts = String(username || '').split('.');
   if (parts.length < 2 || !parts[0] || !parts[1]) {
     return {
@@ -172,13 +175,35 @@ function parsePublicUsername(username, ltcChain, dogeChain) {
   } catch (err) {
     return { ok: false, reason: `the Dogecoin address is not valid: ${err.message}` };
   }
+  // An optional third address, Pepecoin's, when the pool merge-mines it:
+  // "<LTC>.<DOGE>.<PEP>[.worker]". Without one the name reads exactly as it
+  // always did, the third part being the worker, and that miner simply mines
+  // without Pepecoin. Something shaped like an address that does not decode is
+  // refused rather than taken for a rig name — a typo there would otherwise
+  // cost the miner every Pepecoin block without a word.
+  let pepScript = null;
+  let pepAddress = null;
+  let rest = parts.slice(2);
+  if (pepChain && rest.length && rest[0]) {
+    try {
+      pepScript = u.addressToScript(rest[0], pepChain);
+      pepAddress = rest[0];
+      rest = rest.slice(1);
+    } catch (err) {
+      if (/^[1-9A-HJ-NP-Za-km-z]{33,35}$/.test(rest[0])) {
+        return { ok: false, reason: `the Pepecoin address is not valid: ${err.message}` };
+      }
+    }
+  }
   return {
     ok: true,
     ltcAddress: parts[0],
     dogeAddress: parts[1],
+    pepAddress,
     ltcScript,
     dogeScript,
-    workerName: parts.slice(2).join('.') || null,
+    pepScript,
+    workerName: rest.join('.') || null,
   };
 }
 
