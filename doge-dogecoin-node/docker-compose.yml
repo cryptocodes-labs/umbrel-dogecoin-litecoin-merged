@@ -20,7 +20,7 @@ services:
   # Dogecoin Core full node
   # ---------------------------------------------------------------------
   dogecoind:
-    image: ghcr.io/andreashetem-cloud/umbrel-dogecoin-core:1.14.9-1
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-core:1.14.9-1
     restart: on-failure
     stop_grace_period: 5m
     logging: *default-logging
@@ -99,7 +99,7 @@ services:
   # Dashboard + Umbrel widgets
   # ---------------------------------------------------------------------
   app:
-    image: ghcr.io/andreashetem-cloud/umbrel-dogecoin-ui:1.0.0
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-ui:1.0.0
     restart: on-failure
     logging: *default-logging
     depends_on:

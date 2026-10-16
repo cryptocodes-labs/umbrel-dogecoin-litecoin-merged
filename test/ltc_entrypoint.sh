@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENTRYPOINT="${REPO_ROOT}/images/ltc-core/entrypoint.sh"
 HEALTHCHECK="${REPO_ROOT}/images/ltc-core/healthcheck.sh"
 WORK="$(mktemp -d)"
-LTC_VERSION="${LTC_VERSION:-0.21.4}"
+LTC_VERSION="${LTC_VERSION:-0.21.5.8}"
 NODE_RPC_PORT="${NODE_RPC_PORT:-24332}"
 
 PASS=0
@@ -69,7 +69,7 @@ mkdir -p "${STUB}"
 cat > "${STUB}/litecoind" <<'EOS'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
-  echo "Litecoin Core version v0.21.4"
+  echo "Litecoin Core version v0.21.5.8"
   exit 0
 fi
 printf '%s\n' "$*" > "${ARGV_LOG:-/dev/null}"

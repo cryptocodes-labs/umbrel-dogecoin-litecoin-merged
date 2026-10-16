@@ -31,11 +31,17 @@ jobs:
           path: /tmp/dogecoin-*.tar.gz
           key: dogecoin-core-1.14.9-${{ runner.arch }}
 
+      - name: Cache the Pepecoin Core release tarball
+        uses: actions/cache@v4
+        with:
+          path: /tmp/pepecoin-*.tar.gz
+          key: pepecoin-core-1.1.0-${{ runner.arch }}
+
       - name: Cache the Litecoin Core release tarball
         uses: actions/cache@v4
         with:
           path: /tmp/litecoin-*.tar.gz
-          key: litecoin-core-0.21.4-${{ runner.arch }}
+          key: litecoin-core-0.21.5.8-${{ runner.arch }}
 
       - name: Entrypoint and config-generation suite
         run: bash ./test/entrypoint.sh
@@ -57,6 +63,12 @@ jobs:
 
       - name: Merged template ordering
         run: node test/merged_ordering.js
+
+      - name: Public merged mining, pure functions
+        run: node test/public_unit.js
+
+      - name: Several aux chains under one parent (chain merkle tree)
+        run: node test/multi_aux_unit.js
 
       - name: Node alarm state machine
         run: node test/health.js
@@ -117,6 +129,13 @@ jobs:
       - name: Integration suite
         run: bash ./test/integration.sh
 
+      # The one merged-mining claim that only the daemons can settle: a Dogecoin
+      # block committed into a Litecoin parent built by our code is accepted by
+      # dogecoind AND litecoind. Runs the exact releases the images pin, so a
+      # node upgrade is tested here before it ships.
+      - name: Merged mining against real litecoind and dogecoind
+        run: bash ./test/merged_regtest.sh
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -134,6 +153,12 @@ jobs:
           dockerfile: images/ltc-core/Dockerfile
           failure-threshold: error
 
+      - name: Lint the Pepecoin node Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: images/pep-core/Dockerfile
+          failure-threshold: error
+
       - name: Lint the dashboard Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -148,9 +173,12 @@ jobs:
             images/core/healthcheck.sh \
             images/ltc-core/entrypoint.sh \
             images/ltc-core/healthcheck.sh \
+            images/pep-core/entrypoint.sh \
+            images/pep-core/healthcheck.sh \
             doge-dogecoin-node/exports.sh \
             doge-dogecoin-solo/exports.sh \
             doge-litecoin-node/exports.sh \
+            doge-pepecoin-node/exports.sh \
             scripts/*.sh \
             test/*.sh
 
@@ -179,6 +207,14 @@ jobs:
           push: false
           cache-from: type=gha,scope=ltc-core
           cache-to: type=gha,mode=max,scope=ltc-core
+      - name: Build pepecoind (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: images/pep-core
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=pep-core
+          cache-to: type=gha,mode=max,scope=pep-core
       - name: Build the stratum server (amd64 + arm64)
         uses: docker/build-push-action@v6
         with:

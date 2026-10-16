@@ -5,7 +5,7 @@ category: bitcoin
 # Litecoin Solo Mining" was shown as "Dogecoin + Litecoi…", which loses the one
 # word that says what the app is for.
 name: DOGE + LTC Solo
-version: "1.6.1"
+version: "1.8.0"
 tagline: Solo mine Dogecoin, or merge-mine Dogecoin and Litecoin, on your own nodes
 description: >-
   A stratum server that turns your Dogecoin node into a solo mining pool of one.
@@ -40,23 +40,39 @@ description: >-
   block. The dashboard shows your real expected time so you can decide for yourself. Much lottery.
   Very patience.
 developer: Andreas
-website: https://github.com/andreashetem-cloud/umbrel-dogecoin
+website: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
 dependencies:
   - doge-dogecoin-node
-repo: https://github.com/andreashetem-cloud/umbrel-dogecoin
-support: https://github.com/andreashetem-cloud/umbrel-dogecoin/issues
+repo: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
+support: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/issues
 port: 22551
-icon: https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-solo/icon.svg
+icon: https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-solo/icon.svg
 gallery:
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-solo/gallery/1.jpg
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-solo/gallery/2.jpg
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-solo/gallery/3.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-solo/gallery/1.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-solo/gallery/2.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-solo/gallery/3.jpg
 path: ""
 defaultPassword: ""
 deterministicPassword: false
 torOnly: false
 installSize: 200000000
 releaseNotes: >-
+  Optional Pepecoin merge mining, beside Dogecoin, under the same Litecoin work. Set PEP_RPC_HOST
+  (your Pepecoin Node, e.g. doge-pepecoin-node_pepecoind_1), PEP_RPC_PASSWORD and
+  PEP_PAYOUT_ADDRESS in .env to turn it on; without them nothing changes. Pepecoin can never stop
+  or slow the pool: while its node is down or syncing, jobs carry Litecoin and Dogecoin only. In
+  public mode miners opt in with LTC.DOGE.PEP[.rig] and are paid 99% of their own Pepecoin blocks.
+
+
+  Adds an optional public mode for merged mining (PUBLIC_MERGED=1), for running a port that
+  other people mine on, each paid at their own addresses. It runs as a separate container of
+  the same image next to this app and is off unless you turn it on: with PUBLIC_MERGED unset,
+  your own pool builds exactly the same coinbase as before, byte for byte. Miners use the
+  username <LTC address>.<DOGE address>[.rig]; the pool builds each miner's Dogecoin block
+  itself from getblocktemplate, paying 99% to the miner and POOL_FEE_PERCENT to you, and splits
+  the Litecoin coinbase the same way. See the README section "A public port".
+
+
   The Mining profile section stayed silent about the rented port in one case: when
   MINING_PROFILE was fixed in .env, the "Fixed at ..." message never mentioned a
   configured RENTED_STRATUM_PORT, even though that port was running fine. It now
@@ -254,4 +270,4 @@ widgets:
           text: "0"
           subtext: "found"
 submitter: Andreas
-submission: https://github.com/andreashetem-cloud/umbrel-dogecoin
+submission: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged

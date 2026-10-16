@@ -1097,8 +1097,10 @@ let bannerBlockHash = null;
 // a Dogecoin block arrive through the same code, at wildly different heights
 // and rewards, and calling both "DOGE" turns a €2,000 event into a message the
 // user cannot act on — wrong wallet, wrong explorer, wrong node.
-function chainOf(b){ return (b && b.chain === 'LTC') ? 'LTC' : 'DOGE'; }
-function coinName(b){ return chainOf(b) === 'LTC' ? 'Litecoin' : 'Dogecoin'; }
+// Pepecoin is a further aux chain beside Dogecoin; records without a chain are
+// Dogecoin's, as they always were.
+function chainOf(b){ return (b && (b.chain === 'LTC' || b.chain === 'PEP')) ? b.chain : 'DOGE'; }
+function coinName(b){ const c = chainOf(b); return c === 'LTC' ? 'Litecoin' : c === 'PEP' ? 'Pepecoin' : 'Dogecoin'; }
 
 function showBanner(b){
   const verdict = b.status === 'accepted'
@@ -1432,9 +1434,10 @@ async function tick(){
   // In merged mode the count spans two chains, so say how it splits rather than
   // leaving the user to guess which one paid.
   const ltcBlocks = d.blocks.filter((b) => chainOf(b) === 'LTC' && b.accepted === true).length;
-  const dogeBlocks = d.blocks.filter((b) => chainOf(b) !== 'LTC' && b.accepted === true).length;
+  const dogeBlocks = d.blocks.filter((b) => chainOf(b) === 'DOGE' && b.accepted === true).length;
+  const pepBlocks = d.blocks.filter((b) => chainOf(b) === 'PEP' && b.accepted === true).length;
   $('fBlocksSub').textContent = !d.blocks.length ? 'none yet'
-    : (d.mergedMining ? dogeBlocks + ' DOGE · ' + ltcBlocks + ' LTC · ' : '') +
+    : (d.mergedMining ? dogeBlocks + ' DOGE · ' + ltcBlocks + ' LTC · ' + (d.pep || pepBlocks ? pepBlocks + ' PEP · ' : '') : '') +
       'last ' + since(d.blocks[0].at) + ' ago';
 
   const eta = (d.totalHashrate > 0 && netHash > 0) ? (60*netHash)/d.totalHashrate : 0;
@@ -1632,7 +1635,7 @@ async function tick(){
     const SHOWN = 12;
     // The chain column only appears when there is more than one chain in play.
     // On a Dogecoin-only pool it would be a column of identical values.
-    const anyLtc = d.blocks.some((b) => chainOf(b) === 'LTC');
+    const anyLtc = d.blocks.some((b) => chainOf(b) !== 'DOGE');
     let h = '<table><thead><tr><th>Height</th>' + (anyLtc ? '<th>Chain</th>' : '') +
             '<th>Status</th><th class="hide">Worker</th>' +
             '<th class="r">Reward</th><th class="r">When</th></tr></thead><tbody>';

@@ -15,7 +15,8 @@ const { EventEmitter } = require('node:events');
 
 const { RpcClient } = require('./rpc');
 const { Job, validateShareAsync, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE } = require('./job');
-const { MergedJob, LTC_RULES, DOGE_CHAIN_ID } = require('./merged');
+const { MergedJob, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID } = require('./merged');
+const pm = require('./public-merged');
 const u = require('./util');
 
 const MAX_LINE_BYTES = 16 * 1024;
@@ -108,11 +109,36 @@ class Pool extends EventEmitter {
     // Litecoin clients below carry the getblocktemplate/longpoll/submitblock
     // traffic — with the same three-client split and for the same reasons.
     this.merged = !!config.mergedMining;
+    // Public merged mining: a port meant for strangers. Each miner is paid on
+    // both chains at the two addresses in its username, and the configured
+    // addresses receive the pool fee instead of the block. Only meaningful on
+    // top of merged mode; the private merged path below is untouched by it.
+    this.publicMerged = this.merged && !!config.publicMerged;
     if (this.merged) {
       if (!config.ltcRpc) throw new Error('merged mining needs ltcRpc connection details');
       this.ltcRpc = new RpcClient(config.ltcRpc);
       this.ltcLongpollRpc = new RpcClient({ ...config.ltcRpc, timeout: 120000 });
       this.ltcSubmitRpc = new RpcClient({ ...config.ltcRpc, timeout: 180000 });
+    }
+
+    // Pepecoin: a further aux chain merge-mined beside Dogecoin, under the same
+    // Litecoin parent (PEP_RPC_HOST + PEP_PAYOUT_ADDRESS). Optional in the
+    // strongest sense, unlike Dogecoin: it can never stop or slow the pool.
+    // pepecoind is polled on its own timer with a short timeout, and every job
+    // is built from whatever Pepecoin block is current at that moment — none
+    // if the node is down, in which case the commitment is exactly the
+    // Dogecoin-only one and nothing else changes. Off when not configured.
+    this.pep = null;
+    if (this.merged && config.pep && config.pep.rpc && config.pep.payoutAddress) {
+      this.pep = {
+        rpc: new RpcClient({ ...config.pep.rpc, timeout: 5000 }),
+        submitRpc: new RpcClient({ ...config.pep.rpc, timeout: 180000 }),
+        payoutAddress: config.pep.payoutAddress,
+        block: null,
+        unavailableSince: null,
+        error: null,
+        polling: false,
+      };
     }
 
     this.jobs = new Map();
@@ -148,6 +174,9 @@ class Pool extends EventEmitter {
       // whether the aux longpoll below is earning its keep.
       auxTipMissed: 0,
       auxTipMissedAt: null,
+      // The same for Pepecoin, which is polled only.
+      pepTipMissed: 0,
+      pepTipMissedAt: null,
     };
     // How often dogecoind's longpoll came back, and how often that was actually
     // a new tip rather than a mempool update. Both are surfaced: zero tip moves
@@ -217,6 +246,10 @@ class Pool extends EventEmitter {
     // the one thing an in-flight loop cannot mistake for its own.
     this.generation = (this.generation || 0) + 1;
 
+    // The first job carries Pepecoin if pepecoind answers within its timeout;
+    // otherwise the pool starts on Litecoin and Dogecoin and picks Pepecoin up
+    // on a later poll. pollPep never throws.
+    if (this.pep) await this.pollPep();
     await this.refreshTemplate('startup');
     await this.reconcileBlocks();
 
@@ -341,6 +374,10 @@ class Pool extends EventEmitter {
         .finally(() => { this.refreshInFlight = false; });
     }, this.config.pollIntervalMs);
     this.pollTimer.unref();
+    if (this.pep) {
+      this.pepTimer = setInterval(() => this.pollPep(), this.config.pepPollMs || 2000);
+      this.pepTimer.unref();
+    }
     this.longPollLoop();
     if (this.wantsAuxLongpoll()) this.auxLongPollLoop();
     this.log(`stratum listening on 0.0.0.0:${this.config.stratumPort}`);
@@ -372,6 +409,31 @@ class Pool extends EventEmitter {
         `(script ${this.ltcPayoutScript.toString('hex')}), aux Dogecoin paying ${this.config.payoutAddress}`
     );
 
+    if (this.pep) {
+      // Pepecoin's network follows Dogecoin's: a regtest pool merge-mines a
+      // regtest Pepecoin. Derived here, not asked of pepecoind, so a Pepecoin
+      // node that is down at startup costs nothing — not even the ability to
+      // read a miner's Pepecoin address.
+      this.pepChain = `pep-${this.chain}`;
+      try {
+        this.pepPayoutScript = u.addressToScript(this.pep.payoutAddress, this.pepChain);
+        this.log(
+          `merged mining: aux Pepecoin paying ${this.pep.payoutAddress} — optional: while pepecoind ` +
+            'is unreachable, jobs carry Litecoin and Dogecoin only'
+        );
+      } catch (err) {
+        // Optional chain, so a bad address switches Pepecoin off loudly
+        // instead of refusing to start the Litecoin and Dogecoin pool.
+        this.log(`Pepecoin DISABLED: PEP_PAYOUT_ADDRESS is not a ${this.pepChain} address (${err.message})`);
+        this.pep = null;
+      }
+    }
+
+    if (this.publicMerged) {
+      await this.startPublicMerged();
+      return;
+    }
+
     // Fail now if dogecoind cannot serve aux blocks — an old build, or one
     // without the wallet — instead of at the first template refresh.
     const probe = await this.rpc.call('createauxblock', [this.config.payoutAddress]);
@@ -398,6 +460,141 @@ class Pool extends EventEmitter {
     }
   }
 
+  // Public merged startup. The Dogecoin block is built from dogecoind's
+  // getblocktemplate (see public-merged.js), so that is what is probed — and
+  // the probe builds a real aux block, so a template this code cannot turn into
+  // a Dogecoin block refuses to start instead of failing at the first share.
+  async startPublicMerged() {
+    const pct = Number(this.config.poolFeePercent);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 10) {
+      throw new Error(`POOL_FEE_PERCENT must be between 0 and 10, got ${this.config.poolFeePercent}`);
+    }
+    if (this.config.lockPayoutAddress) {
+      throw new Error('PUBLIC_MERGED=1 pays every miner at its own addresses; it cannot run with LOCK_PAYOUT_ADDRESS=1');
+    }
+    this.poolFeePercent = pct;
+    const probe = pm.buildAuxBlock(
+      await this.rpc.call('getblocktemplate'),
+      this.payoutScript, this.payoutScript, pct, this.config.coinbaseTag
+    );
+    if (probe.chainid !== DOGE_CHAIN_ID) {
+      throw new Error(`the aux node does not describe chain ${DOGE_CHAIN_ID}`);
+    }
+    this.log(
+      `PUBLIC merged mining: each miner is paid at the LTC and DOGE addresses in its username; ` +
+        `pool fee ${pct}% to ${this.config.ltcPayoutAddress} (LTC) and ${this.config.payoutAddress} (DOGE)`
+    );
+  }
+
+  // The Dogecoin half of a merged refresh. Private mode: dogecoind's own aux
+  // block, exactly as before. Public mode: a Dogecoin template that the pool
+  // builds one block per miner from.
+  //
+  // The template is REUSED until the Dogecoin tip moves, or its fees grew and
+  // the job is due a rebuild anyway. A fresh getblocktemplate carries a new
+  // curtime, hence a new aux hash; treating that as a new block would send
+  // every miner clean_jobs every poll and throw their work away. This is the
+  // same caching dogecoind itself applies to createauxblock.
+  async fetchAuxBlock() {
+    if (!this.publicMerged) {
+      return this.rpc.call('createauxblock', [this.config.payoutAddress]);
+    }
+    const fresh = await this.rpc.call('getblocktemplate');
+    const cur = this.currentJob && this.currentJob.dogeTemplate;
+    let template = fresh;
+    if (cur && cur.previousblockhash === fresh.previousblockhash) {
+      const age = Date.now() - (this.currentJob.createdAt || 0);
+      const worthIt = fresh.coinbasevalue > cur.coinbasevalue && age >= this.config.jobRebuildMs;
+      if (!worthIt) template = cur;
+    }
+    // The pool's own view of the block: miner and fee both at the pool's
+    // address. Only the hash, height and bits of it are used — for change
+    // detection and the dashboard. Every miner is handed its own variant.
+    const base = pm.buildAuxBlock(
+      template, this.payoutScript, this.payoutScript, this.poolFeePercent, this.config.coinbaseTag
+    );
+    base.dogeTemplate = template;
+    return base;
+  }
+
+  // Pepecoin's aux block, on its own timer. Never throws, never blocks the
+  // Litecoin/Dogecoin path: every outcome is recorded on this.pep and the next
+  // job is built from it.
+  //
+  // Private mode asks pepecoind for the block with createauxblock, exactly as
+  // Dogecoin's is asked for. A changed hash rebuilds the job so the new block is
+  // what miners commit to — without clean_jobs, because their Litecoin and
+  // Dogecoin work is still good (see onMergedTemplate). The node going away
+  // drops Pepecoin from the next job rather than carrying a stale block: an aux
+  // block pepecoind no longer holds can never be submitted.
+  async pollPep() {
+    const pep = this.pep;
+    if (!pep || pep.polling) return;
+    pep.polling = true;
+    const had = pep.block ? pep.block.hash : null;
+    try {
+      const block = await this.fetchPepBlock();
+      if (pep.unavailableSince) {
+        this.log(`the Pepecoin node is answering again after ${
+          Math.round((Date.now() - pep.unavailableSince) / 1000)
+        }s`);
+      }
+      pep.unavailableSince = null;
+      pep.error = null;
+      pep.block = block;
+    } catch (err) {
+      if (!pep.unavailableSince) {
+        pep.unavailableSince = Date.now();
+        this.log(`Pepecoin left out of new jobs: ${err.message}. Litecoin and Dogecoin mining continue.`);
+      }
+      pep.error = err.message;
+      pep.block = null;
+    } finally {
+      pep.polling = false;
+    }
+    const now = pep.block ? pep.block.hash : null;
+    if (now !== had && this.currentJob && !this.refreshInFlight) {
+      this.refreshTemplate(now ? 'pepecoin block' : 'pepecoin gone').catch(() => {});
+    }
+  }
+
+  async fetchPepBlock() {
+    if (this.publicMerged) {
+      // Public mode, as for Dogecoin: the pool builds each miner's Pepecoin
+      // block itself from getblocktemplate (pm.buildAuxBlock with chain 63).
+      // The template is reused until the tip moves, or fees grew and the last
+      // one is older than a job rebuild — a fresh template has a new curtime
+      // and so a new hash, and treating every poll as a new block would
+      // rebuild every miner's job every two seconds.
+      const fresh = await this.pep.rpc.call('getblocktemplate');
+      const cur = this.pep.block && this.pep.block.pepTemplate;
+      let template = fresh;
+      if (cur && cur.previousblockhash === fresh.previousblockhash) {
+        const age = Date.now() - (this.pep.templateAt || 0);
+        const worthIt = fresh.coinbasevalue > cur.coinbasevalue && age >= this.config.jobRebuildMs;
+        if (!worthIt) template = cur;
+      }
+      if (template === fresh) this.pep.templateAt = Date.now();
+      // buildAuxBlock refuses a template that does not carry chain id 63.
+      const base = pm.buildAuxBlock(
+        template, this.pepPayoutScript, this.pepPayoutScript, this.poolFeePercent, this.config.coinbaseTag, PEP_CHAIN_ID
+      );
+      base.pepTemplate = template;
+      return base;
+    }
+    const block = await this.pep.rpc.call('createauxblock', [this.pep.payoutAddress]);
+    if (!block || !/^[0-9a-f]{64}$/.test(String(block.hash))) {
+      throw new Error('pepecoind createauxblock did not return an aux block hash');
+    }
+    // The tree puts each chain at the slot its own id dictates; a daemon that
+    // is not Pepecoin would be committed to at the wrong slot and every proof
+    // refused. Treated like an outage: left out, said out loud.
+    if (block.chainid !== PEP_CHAIN_ID) {
+      throw new Error(`the node at PEP_RPC_HOST reports chain id ${block.chainid}, not Pepecoin's ${PEP_CHAIN_ID}`);
+    }
+    return block;
+  }
+
   // Ask the node about every block we recorded but never resolved.
   //
   // A crash, a power cut or a kill during the submit-retry window leaves a
@@ -418,7 +615,8 @@ class Pool extends EventEmitter {
       // existed carry no `chain` and are Dogecoin's. Asking dogecoind about a
       // Litecoin hash gets an honest "not found", which would rewrite a good
       // block to "the node does not have this block" on every restart.
-      const rpc = b.chain === 'LTC' ? this.ltcRpc : this.rpc;
+      const rpc =
+        b.chain === 'LTC' ? this.ltcRpc : b.chain === 'PEP' ? this.pep && this.pep.rpc : this.rpc;
       if (!rpc) continue;
       try {
         const block = await rpc.call('getblock', [b.hash]);
@@ -456,6 +654,7 @@ class Pool extends EventEmitter {
 
   stop() {
     clearInterval(this.pollTimer);
+    clearInterval(this.pepTimer);
     clearInterval(this.sampleTimer);
     clearInterval(this.saveTimer);
     clearInterval(this.pingTimer);
@@ -750,7 +949,7 @@ class Pool extends EventEmitter {
     // mempool moves, so this is cheap.
     let auxBlock = null;
     try {
-      auxBlock = await this.rpc.call('createauxblock', [this.config.payoutAddress]);
+      auxBlock = await this.fetchAuxBlock();
       if (this.auxUnavailableSince) {
         this.log(`the Dogecoin node is answering again after ${
           Math.round((Date.now() - this.auxUnavailableSince) / 1000)
@@ -894,14 +1093,35 @@ class Pool extends EventEmitter {
       this.currentJob.template.previousblockhash !== template.previousblockhash ||
       this.currentJob.auxHash !== auxBlock.hash;
 
-    if (!isNewBlock) {
+    // Pepecoin, when it is configured and its node answered: the block current
+    // at this moment (pollPep). A new Pepecoin block on its own rebuilds the
+    // job but is NOT a new block for the miners — their Litecoin and Dogecoin
+    // work is untouched by it — so it goes out without clean_jobs and nothing
+    // they are hashing is thrown away.
+    const pepBlock = this.pep && this.pep.block ? this.pep.block : null;
+    const pepHash = pepBlock ? pepBlock.hash : null;
+    const pepChanged = !!this.currentJob && (this.currentJob.pepHash || null) !== pepHash;
+
+    if (!isNewBlock && !pepChanged) {
       const ageMs = Date.now() - this.currentJob.createdAt;
       const gainedValue = template.coinbasevalue > this.currentJob.coinbaseValue;
       if (!gainedValue && ageMs < this.config.jobRebuildMs) return;
     }
 
+    const extraAux = pepBlock ? [{ name: 'PEP', chainId: PEP_CHAIN_ID, block: pepBlock }] : [];
     const id = (++this.jobCounter).toString(16).padStart(8, '0');
-    const job = new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock);
+    const job = this.publicMerged
+      ? new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock, {
+          fee: { script: this.ltcPayoutScript, percent: this.poolFeePercent },
+          extraAux,
+        })
+      : new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock, { extraAux });
+    job.pepHash = pepHash;
+    // Public mode: the Dogecoin template every miner's own aux block is built
+    // from. Kept on the job so a variant is always built from the same
+    // template as the job it belongs to. Pepecoin's likewise.
+    if (this.publicMerged) job.dogeTemplate = auxBlock.dogeTemplate;
+    if (this.publicMerged && pepBlock) job.pepTemplate = pepBlock.pepTemplate;
     // When this job's data was ASKED for, not when it was built: the ordering
     // guard above compares request times, and a slow RPC would otherwise make
     // a stale answer look newer than the fresh one it overtook.
@@ -920,7 +1140,9 @@ class Pool extends EventEmitter {
       this.log(
         `new merged job — Dogecoin height ${job.auxHeight} (difficulty ` +
           `${job.auxDifficulty.toFixed(0)}), Litecoin height ${job.height} (difficulty ` +
-          `${job.networkDifficulty.toFixed(0)}) (${reason})`
+          `${job.networkDifficulty.toFixed(0)})` +
+          (pepBlock ? `, Pepecoin height ${pepBlock.height}` : '') +
+          ` (${reason})`
       );
     }
 
@@ -975,7 +1197,55 @@ class Pool extends EventEmitter {
   // coinbase too — sending one coinbase and validating against another yields a
   // different merkle root and rejects every share the worker submits.
   clientJob(client, job) {
+    if (this.publicMerged) return this.publicJobForClient(job, client);
     return client.payoutScript ? this.jobForClient(job, client) : job;
+  }
+
+  // Public merged: the miner's own Litecoin coinbase (99% to it, the fee to
+  // the pool) committing to the miner's own Dogecoin block (the same split).
+  // Cached per address pair on the job, like jobForClient; the number of pairs
+  // is capped at authorize time.
+  publicJobForClient(job, client) {
+    if (!client.ltcPayoutScript || !client.payoutScript || !job.dogeTemplate) {
+      // Unreachable for an authorized public client; refusing is the only
+      // safe answer, because the base job pays the pool.
+      throw new Error('public merged job requested for a client without both payout addresses');
+    }
+    const key = this.payoutKey(client.ltcPayoutScript, client.payoutScript, client.pepPayoutScript);
+    if (!job.variants) job.variants = new Map();
+    const cached = job.variants.get(key);
+    if (cached) return cached;
+    const auxBlock = pm.buildAuxBlock(
+      job.dogeTemplate, client.payoutScript, this.payoutScript, this.poolFeePercent, this.config.coinbaseTag
+    );
+    // Pepecoin for the miners who gave a Pepecoin address, built the same way:
+    // 99% to them, the fee to the pool. A miner without one — or any miner
+    // while pepecoind is down — gets the Litecoin + Dogecoin job it always got.
+    const extraAux = [];
+    if (job.pepTemplate && client.pepPayoutScript) {
+      const pepBlock = pm.buildAuxBlock(
+        job.pepTemplate, client.pepPayoutScript, this.pepPayoutScript, this.poolFeePercent,
+        this.config.coinbaseTag, PEP_CHAIN_ID
+      );
+      extraAux.push({ name: 'PEP', chainId: PEP_CHAIN_ID, block: pepBlock });
+    }
+    const variant = new MergedJob(job.id, job.template, client.ltcPayoutScript, this.config.coinbaseTag, auxBlock, {
+      fee: { script: this.ltcPayoutScript, percent: this.poolFeePercent },
+      extraAux,
+    });
+    variant.dogeTemplate = job.dogeTemplate;
+    variant.pepTemplate = job.pepTemplate || null;
+    job.variants.set(key, variant);
+    return variant;
+  }
+
+  // One payout set, one key: the Litecoin and Dogecoin scripts, plus the
+  // Pepecoin one when the miner gave it. Two miners with the same LTC/DOGE pair
+  // but different Pepecoin addresses mine different coinbases, so they must not
+  // share a cached variant.
+  payoutKey(ltcScript, dogeScript, pepScript) {
+    const base = `${ltcScript.toString('hex')}:${dogeScript.toString('hex')}`;
+    return pepScript ? `${base}:${pepScript.toString('hex')}` : base;
   }
 
   async longPollLoop() {
@@ -1472,9 +1742,52 @@ class Pool extends EventEmitter {
     client.worker = String(username || 'worker')
       .replace(/[\u0000-\u001f\u007f]/g, '')
       .slice(0, 64) || 'worker';
-    client.authorized = true;
     client.payoutScript = null;
     client.payoutAddress = null;
+
+    if (this.publicMerged) {
+      // Parsed from the name BEFORE the 64-character display cut: two
+      // addresses and a dot are already 69 characters, so the truncated form
+      // would always carry a broken Dogecoin address.
+      const raw = String(username || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
+      const parsed = pm.parsePublicUsername(raw, this.ltcChain, this.chain, this.pep ? this.pepChain : null);
+      if (!parsed.ok) {
+        this.churnLog(`worker refused: ${client.worker} from ${client.remote} — ${parsed.reason}`);
+        return this.reply(client, msg.id, false, [24, parsed.reason, null]);
+      }
+      const key = this.payoutKey(parsed.ltcScript, parsed.dogeScript, parsed.pepScript);
+      const inUse = new Set();
+      for (const c of this.clients.values()) {
+        if (c !== client && c.authorized && c.ltcPayoutScript && c.payoutScript) {
+          inUse.add(this.payoutKey(c.ltcPayoutScript, c.payoutScript, c.pepPayoutScript));
+        }
+      }
+      if (!inUse.has(key) && inUse.size >= this.config.maxPayoutVariants) {
+        this.churnLog(`worker refused: ${client.worker} — the pool is full (${inUse.size} address pairs)`);
+        return this.reply(client, msg.id, false, [24, 'pool is full, try again later', null]);
+      }
+      // Shown on the dashboard and used as the statistics key: the rig name
+      // and the Dogecoin address, which together fit the display limit.
+      client.worker = `${parsed.workerName ? `${parsed.workerName.slice(0, 20)}@` : ''}${parsed.dogeAddress}`.slice(0, 64);
+      client.ltcPayoutScript = parsed.ltcScript;
+      client.ltcPayoutAddress = parsed.ltcAddress;
+      client.payoutScript = parsed.dogeScript;
+      client.payoutAddress = parsed.dogeAddress;
+      client.pepPayoutScript = parsed.pepScript;
+      client.pepPayoutAddress = parsed.pepAddress;
+      client.authorized = true;
+      this.reply(client, msg.id, true);
+      this.churnLog(
+        `worker connected: ${client.worker} (#${client.id}) from ${client.remote} ` +
+          `paying LTC ${parsed.ltcAddress} / DOGE ${parsed.dogeAddress}` +
+          (parsed.pepAddress ? ` / PEP ${parsed.pepAddress}` : '')
+      );
+      this.setDifficulty(client, client.difficulty);
+      if (this.currentJob) this.sendJob(client, this.currentJob, true);
+      return;
+    }
+
+    client.authorized = true;
 
     // These miners put an address in the username field, so honour it: the
     // block a worker finds pays the address that worker asked for. Anything
@@ -1642,6 +1955,14 @@ class Pool extends EventEmitter {
       this.dispatchSubmission(
         () => this.submitAuxBlock(effectiveJob, result, client),
         'Dogecoin aux block submission'
+      );
+    }
+    // Further aux chains (Pepecoin), each on its own guard for the same
+    // reason: one chain failing must never cost another its block.
+    for (const a of result.extraAuxCandidates || []) {
+      this.dispatchSubmission(
+        () => this.submitExtraAuxBlock(effectiveJob, result, client, a),
+        `${a.name} aux block submission`
       );
     }
 
@@ -1845,6 +2166,24 @@ class Pool extends EventEmitter {
       return;
     }
 
+    if (this.publicMerged) {
+      const blockHex = pm.serializeAuxBlock(job.auxBlock, Buffer.from(auxPowHex, 'hex'));
+      await this.submitCandidate({
+        chain: 'DOGE',
+        height: job.auxHeight,
+        hash: job.auxHash,
+        // The whole Dogecoin block this time, auxpow included: submitblock
+        // takes exactly this, so it is also what recovers it by hand.
+        hex: blockHex,
+        hexLabel: `BLOCK HEX chain=DOGE height=${job.auxHeight}`,
+        reward: job.auxValue,
+        address: client.payoutAddress,
+        worker: client.worker,
+        submit: () => this.submitWithRetries(blockHex, job.auxHeight),
+      });
+      return;
+    }
+
     await this.submitCandidate({
       chain: 'DOGE',
       height: job.auxHeight,
@@ -1860,12 +2199,106 @@ class Pool extends EventEmitter {
     });
   }
 
+  async submitExtraAuxBlock(job, result, client, a) {
+    this.inFlightBlocks = (this.inFlightBlocks || 0) + 1;
+    try {
+      await this.submitExtraAuxBlockInner(job, result, client, a);
+    } finally {
+      this.inFlightBlocks--;
+    }
+  }
+
+  // A Pepecoin block, from the same share as the Litecoin and Dogecoin ones:
+  // the same parent proof with Pepecoin's own path through the chain merkle
+  // tree. Checked against the auxpow rules first, exactly as Dogecoin's is.
+  async submitExtraAuxBlockInner(job, result, client, a) {
+    const verdict = job.verifyAux(result.header, result.coinbase, a.chainId, a.hash);
+    if (!verdict.ok) {
+      this.log(`NOT submitting the ${a.name} aux block at height ${a.height}: ${verdict.problems.join(' | ')}`);
+      return;
+    }
+    const auxPowHex = job.auxPowHex(result.header, result.coinbase, a.chainId);
+    const pep = this.pep;
+    if (!pep) return; // switched off since this job was built
+
+    if (this.publicMerged) {
+      const blockHex = pm.serializeAuxBlock(a.block, Buffer.from(auxPowHex, 'hex'));
+      await this.submitCandidate({
+        chain: a.name,
+        height: a.height,
+        hash: a.hash,
+        hex: blockHex,
+        hexLabel: `BLOCK HEX chain=${a.name} height=${a.height}`,
+        reward: a.value,
+        address: client.pepPayoutAddress,
+        worker: client.worker,
+        submit: () => this.submitPepBlockWithRetries(blockHex, a.height),
+      });
+      return;
+    }
+
+    await this.submitCandidate({
+      chain: a.name,
+      height: a.height,
+      hash: a.hash,
+      hex: auxPowHex,
+      hexLabel: `AUXPOW HEX chain=${a.name} height=${a.height} auxhash=${a.hash}`,
+      reward: a.value,
+      address: pep.payoutAddress,
+      worker: client.worker,
+      submit: () => this.submitPepAuxWithRetries(a.hash, auxPowHex, a.height),
+    });
+  }
+
+  // submitAuxWithRetries for pepecoind, including its one hopeless error.
+  async submitPepAuxWithRetries(auxHash, auxPowHex, height) {
+    const delays = [0, 1000, 3000, 10000, 30000, 60000];
+    let lastError = null;
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (delays[attempt] > 0) await sleep(delays[attempt]);
+      try {
+        const ok = await this.pep.submitRpc.call('submitauxblock', [auxHash, auxPowHex]);
+        return ok === true ? null : 'pepecoind refused the auxpow proof';
+      } catch (err) {
+        // Same as Dogecoin: the aux block was discarded when the Pepecoin tip
+        // moved, and no retry brings it back. (Written apart from Dogecoin's
+        // line on purpose: test/mutants.sh mutates that one by its exact text.)
+        if (/block hash unknown/i.test(String(err.message))) {
+          this.stats.pepTipMissed++;
+          this.stats.pepTipMissedAt = Date.now();
+          this.log(`the Pepecoin tip moved before the proof for height ${height} could be submitted`);
+          return 'the Pepecoin tip moved before the proof was submitted';
+        }
+        lastError = err;
+        this.log(`Pepecoin submitauxblock attempt ${attempt + 1}/${delays.length} for height ${height} failed: ${err.message}`);
+      }
+    }
+    throw lastError;
+  }
+
+  async submitPepBlockWithRetries(blockHex, height) {
+    const delays = [0, 1000, 3000, 10000, 30000, 60000];
+    let lastError = null;
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (delays[attempt] > 0) await sleep(delays[attempt]);
+      try {
+        return await this.pep.submitRpc.submitBlock(blockHex);
+      } catch (err) {
+        lastError = err;
+        this.log(`Pepecoin submitblock attempt ${attempt + 1}/${delays.length} for height ${height} failed: ${err.message}`);
+      }
+    }
+    throw lastError;
+  }
+
   async submitBlockInner(job, result, client) {
     // In merged mode this block is the LITECOIN one, and it pays the Litecoin
     // address; a worker's own address is refused at authorize time there.
-    const address = this.merged
-      ? this.config.ltcPayoutAddress
-      : client.payoutAddress || this.config.payoutAddress;
+    const address = this.publicMerged
+      ? client.ltcPayoutAddress
+      : this.merged
+        ? this.config.ltcPayoutAddress
+        : client.payoutAddress || this.config.payoutAddress;
     await this.submitCandidate({
       chain: this.merged ? 'LTC' : 'DOGE',
       height: job.height,
@@ -2164,6 +2597,18 @@ class Pool extends EventEmitter {
       auxTipMoves: this.auxTipMoves || 0,
       auxTipMissed: this.stats.auxTipMissed || 0,
       auxTipMissedAt: this.stats.auxTipMissedAt || null,
+      // Pepecoin, when configured. Never part of the health verdict: it is an
+      // extra, and its node being down changes nothing about LTC and DOGE.
+      pep: this.pep
+        ? {
+            height: this.pep.block ? this.pep.block.height : null,
+            hash: this.pep.block ? this.pep.block.hash : null,
+            unavailableSince: this.pep.unavailableSince || null,
+            error: this.pep.error || null,
+            tipMissed: this.stats.pepTipMissed || 0,
+            tipMissedAt: this.stats.pepTipMissedAt || null,
+          }
+        : null,
       accepted: this.stats.accepted,
       rejected: this.stats.rejected,
       rejectReasons: this.stats.rejectReasons,

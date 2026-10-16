@@ -189,12 +189,73 @@ const ADDRESS_VERSIONS = {
   'ltc-main': { p2pkh: [0x30], p2sh: [0x32, 0x05] },
   'ltc-test': { p2pkh: [0x6f], p2sh: [0x3a, 0xc4] },
   'ltc-regtest': { p2pkh: [0x6f], p2sh: [0x3a, 0xc4] },
+  // Pepecoin, a further aux chain: src/chainparams.cpp (1.1.0) base58Prefixes.
+  // 56 is "P" on mainnet; regtest uses 111/196 like Bitcoin's testnet.
+  'pep-main': { p2pkh: [0x38], p2sh: [0x16] },
+  'pep-test': { p2pkh: [0x71], p2sh: [0xc4] },
+  'pep-regtest': { p2pkh: [0x6f], p2sh: [0xc4] },
 };
+
+// Litecoin native segwit (BIP173): ltc1… on mainnet. Most Litecoin wallets
+// hand these out by default, so a public port that only took L…/M… addresses
+// would turn most miners away. Dogecoin has no segwit and no entry here, so the
+// Dogecoin path cannot reach the decoder at all.
+const BECH32_HRP = { 'ltc-main': 'ltc', 'ltc-test': 'tltc', 'ltc-regtest': 'rltc' };
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+
+function bech32Polymod(values) {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >>> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((top >>> i) & 1) chk ^= GEN[i];
+  }
+  return chk >>> 0;
+}
+
+// Witness version 0 only (P2WPKH, P2WSH), with the original bech32 checksum.
+// Anything else is refused rather than guessed at: a v1+ output built from a
+// mis-decoded program is exactly the unspendable reward this function exists
+// to prevent, and a miner with such an address can use another one.
+function segwitToScript(address, hrp) {
+  if (address !== address.toLowerCase() && address !== address.toUpperCase()) {
+    throw new Error('bech32 address mixes upper and lower case');
+  }
+  const addr = address.toLowerCase();
+  const pos = addr.lastIndexOf('1');
+  if (pos < 1 || pos + 7 > addr.length || addr.length > 90) throw new Error('bech32 address is malformed');
+  if (addr.slice(0, pos) !== hrp) throw new Error(`bech32 prefix ${addr.slice(0, pos)} is not ${hrp}`);
+  const data = [];
+  for (const ch of addr.slice(pos + 1)) {
+    const v = BECH32_CHARSET.indexOf(ch);
+    if (v < 0) throw new Error(`illegal bech32 character ${JSON.stringify(ch)}`);
+    data.push(v);
+  }
+  const hrpExpand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
+  const check = bech32Polymod(hrpExpand.concat(data));
+  const version = data[0];
+  if (version !== 0) throw new Error(`segwit version ${version} addresses are not supported, use a v0 (ltc1q…) or legacy address`);
+  if (check !== 1) throw new Error('bech32 checksum is wrong (typo?)');
+  // 5-bit groups back to bytes, strict: no leftover bits beyond padding.
+  let acc = 0; let bits = 0; const prog = [];
+  for (const v of data.slice(1, -6)) {
+    acc = (acc << 5) | v; bits += 5;
+    while (bits >= 8) { bits -= 8; prog.push((acc >> bits) & 0xff); }
+  }
+  if (bits >= 5 || ((acc << (8 - bits)) & 0xff)) throw new Error('bech32 address has invalid padding');
+  if (prog.length !== 20 && prog.length !== 32) throw new Error(`witness program is ${prog.length} bytes, expected 20 or 32`);
+  return Buffer.concat([Buffer.from([0x00, prog.length]), Buffer.from(prog)]);
+}
 
 // Returns the scriptPubKey that a coinbase output must carry to pay `address`.
 // Throws with a human-readable reason on anything suspicious — this function is
 // the last line of defence against mining a block whose reward is unspendable.
 function addressToScript(address, chain = 'main') {
+  const hrp = BECH32_HRP[chain];
+  if (hrp && typeof address === 'string' && address.toLowerCase().startsWith(`${hrp}1`)) {
+    return segwitToScript(address, hrp);
+  }
   const versions = ADDRESS_VERSIONS[chain] || ADDRESS_VERSIONS.main;
   const decoded = base58Decode(address);
   if (decoded.length !== 25) {

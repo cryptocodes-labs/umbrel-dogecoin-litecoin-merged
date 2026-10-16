@@ -35,14 +35,14 @@ description: >-
 developer: Dogecoin Core developers
 website: https://dogecoin.com
 dependencies: []
-repo: https://github.com/andreashetem-cloud/umbrel-dogecoin
-support: https://github.com/andreashetem-cloud/umbrel-dogecoin/issues
+repo: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
+support: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/issues
 port: 22550
-icon: https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-node/icon.svg
+icon: https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-node/icon.svg
 gallery:
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-node/gallery/1.jpg
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-node/gallery/2.jpg
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-node/gallery/3.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-node/gallery/1.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-node/gallery/2.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-node/gallery/3.jpg
 path: ""
 defaultPassword: ""
 deterministicPassword: false
@@ -96,4 +96,4 @@ backupIgnore:
   - data/.dogecoin/regtest
   - data/.dogecoin/debug.log
 submitter: Andreas
-submission: https://github.com/andreashetem-cloud/umbrel-dogecoin
+submission: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged

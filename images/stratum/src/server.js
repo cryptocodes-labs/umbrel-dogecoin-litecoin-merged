@@ -175,6 +175,35 @@ const config = {
   // a Dogecoin address here decodes perfectly well and would silently pay a
   // hash160 nobody on Litecoin can spend.
   ltcPayoutAddress: (process.env.LTC_PAYOUT_ADDRESS || '').trim(),
+  // Public merged mining (PUBLIC_MERGED=1, needs MERGED_MINING=1): a port for
+  // other people. Each miner is paid on both chains at the addresses in its
+  // username, "<LTC address>.<DOGE address>[.worker]", and the two addresses
+  // above receive POOL_FEE_PERCENT of every block instead. Meant to run as a
+  // SEPARATE container beside the private one, never instead of it.
+  publicMerged: process.env.PUBLIC_MERGED === '1',
+  poolFeePercent: Number(process.env.POOL_FEE_PERCENT || 1),
+
+  // Pepecoin, a further aux chain merge-mined beside Dogecoin (needs
+  // MERGED_MINING=1). On only when PEP_RPC_HOST and PEP_PAYOUT_ADDRESS are both
+  // set; without them nothing below exists and the pool is exactly what it was.
+  // Optional by design: pepecoind being down, slow or misconfigured leaves
+  // Pepecoin out of the jobs and never stops Litecoin or Dogecoin. Private
+  // mode pays every Pepecoin block to PEP_PAYOUT_ADDRESS; public mode pays the
+  // miners who add a Pepecoin address to their username, and takes the same
+  // POOL_FEE_PERCENT for PEP_PAYOUT_ADDRESS.
+  pep:
+    process.env.PEP_RPC_HOST && (process.env.PEP_PAYOUT_ADDRESS || '').trim()
+      ? {
+          rpc: {
+            host: process.env.PEP_RPC_HOST,
+            port: num('PEP_RPC_PORT', 33873),
+            user: process.env.PEP_RPC_USER || 'umbrel',
+            password: process.env.PEP_RPC_PASSWORD || '',
+          },
+          payoutAddress: (process.env.PEP_PAYOUT_ADDRESS || '').trim(),
+        }
+      : null,
+  pepPollMs: Math.max(500, num('PEP_POLL_MS', 2000)),
 
   stratumPort: STRATUM_PORT,
   // Stratum-space difficulties (scrypt, so one share costs D * 2^16 hashes).
@@ -287,13 +316,21 @@ if (config.rentedStratumPort && !config.lockPayoutAddress) {
   process.exit(1);
 }
 
+// Public merged mode is defined on top of merged mining; on its own it would
+// silently be a Dogecoin-only pool that ignores the username format it tells
+// miners to use.
+if (config.publicMerged && !config.mergedMining) {
+  console.error('[config] PUBLIC_MERGED=1 requires MERGED_MINING=1.');
+  process.exit(1);
+}
+
 // A way to read the effective configuration without starting anything. The
 // profile is only useful if it actually reaches the pool, and asserting that
 // from outside the process is the only test that proves it.
 if (process.env.DUMP_CONFIG === '1') {
-  // ltcRpc goes the same way as rpc: it carries a password.
-  const { rpc, payoutAddress, ltcRpc, ltcPayoutAddress, ...safe } = config;
-  console.log(`CONFIG ${JSON.stringify(safe)}`);
+  // ltcRpc goes the same way as rpc: it carries a password. So does pep.
+  const { rpc, payoutAddress, ltcRpc, ltcPayoutAddress, pep, ...safe } = config;
+  console.log(`CONFIG ${JSON.stringify({ ...safe, pep: pep ? { host: pep.rpc.host, port: pep.rpc.port } : null })}`);
   process.exit(0);
 }
 

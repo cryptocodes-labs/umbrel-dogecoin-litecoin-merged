@@ -263,6 +263,12 @@ function judgeShare(job, prepared, powHash, shareTargets) {
   // Undefined outside merged mode, so this is dead weight in the Dogecoin-only
   // path rather than a change to it.
   const isAuxCandidate = job.auxTarget != null && powValue <= job.auxTarget;
+  // Further aux chains merge-mined beside Dogecoin (MergedJob.extraAux), each
+  // against its own target. An empty list everywhere else, so every check
+  // below reads exactly as it did with Dogecoin alone.
+  const extraAuxCandidates =
+    job.extraAux && job.extraAux.length ? job.extraAuxCandidates(powValue) : [];
+  const isAnyAuxCandidate = isAuxCandidate || extraAuxCandidates.length > 0;
   const targets = Array.isArray(shareTargets) ? shareTargets : [shareTargets];
   const meetsShareTarget = targets.some((t) => t != null && powValue <= t);
 
@@ -271,11 +277,11 @@ function judgeShare(job, prepared, powHash, shareTargets) {
   // right authority on whether the timestamp is acceptable — not this
   // container's clock, which may simply be running behind the miner's.
   // Anything else risks throwing a real block away over a few seconds of drift.
-  if (prepared.ntimeTooFarAhead && !isBlockCandidate && !isAuxCandidate) {
+  if (prepared.ntimeTooFarAhead && !isBlockCandidate && !isAnyAuxCandidate) {
     return { ok: false, reason: 'ntime beyond the 2-hour consensus limit', shareDiff };
   }
 
-  if (!isBlockCandidate && !isAuxCandidate && !meetsShareTarget) {
+  if (!isBlockCandidate && !isAnyAuxCandidate && !meetsShareTarget) {
     return { ok: false, reason: 'low difficulty share', shareDiff };
   }
 
@@ -284,11 +290,12 @@ function judgeShare(job, prepared, powHash, shareTargets) {
     shareDiff,
     isBlockCandidate,
     isAuxCandidate,
+    extraAuxCandidates,
     header,
     // The parent coinbase, needed to assemble the auxpow proof. Carried only
     // when something is going to be submitted; a share is a hot path and this
     // is a live reference into the buffers the validator just built.
-    coinbase: isBlockCandidate || isAuxCandidate ? coinbase : null,
+    coinbase: isBlockCandidate || isAnyAuxCandidate ? coinbase : null,
     blockHex: isBlockCandidate ? job.serializeBlock(header, coinbase) : null,
     blockHash: u.reverseBuffer(u.sha256d(header)).toString('hex'),
   };

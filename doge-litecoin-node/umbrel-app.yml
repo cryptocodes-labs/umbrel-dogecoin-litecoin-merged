@@ -2,7 +2,7 @@ manifestVersion: 1
 id: doge-litecoin-node
 category: bitcoin
 name: Litecoin Node
-version: "0.21.4-1"
+version: "0.21.5.8-1"
 tagline: Run your own Litecoin full node, powered by Litecoin Core
 description: >-
   Run a full Litecoin node on your Umbrel, powered by the official Litecoin Core release binaries.
@@ -37,24 +37,26 @@ description: >-
 developer: Litecoin Core developers
 website: https://litecoin.org
 dependencies: []
-repo: https://github.com/andreashetem-cloud/umbrel-dogecoin
-support: https://github.com/andreashetem-cloud/umbrel-dogecoin/issues
+repo: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
+support: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/issues
 port: 9330
-icon: https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-litecoin-node/icon.svg
+icon: https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-litecoin-node/icon.svg
 gallery:
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-litecoin-node/gallery/1.jpg
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-litecoin-node/gallery/2.jpg
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-litecoin-node/gallery/3.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-litecoin-node/gallery/1.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-litecoin-node/gallery/2.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-litecoin-node/gallery/3.jpg
 path: ""
 defaultPassword: ""
 deterministicPassword: false
 torOnly: false
 installSize: 15000000000
 releaseNotes: >-
-  First release. Litecoin Core 0.21.4 from the official signed binaries, pruned to 10 GB by default
-  because this node exists to validate the chain and hand out block templates, not to serve historic
-  blocks. RPC threads and work queue are raised above Litecoin Core's defaults of 4 and 16, which a
-  single mining longpoll is enough to exhaust.
+  Updates Litecoin Core from 0.21.4 to 0.21.5.8, the current official release. This is a required
+  upgrade for anyone who mines: 0.21.5.6 and 0.21.5.7 added two MWEB consensus rules, active on
+  mainnet since heights 3,154,440 and 3,172,640, and a node without them can hand out templates for
+  blocks the rest of the network rejects. The 0.21.5.x series also hardens MWEB validation, fixes
+  getblocktemplate fee and sigop accounting for MWEB transactions, and raises the P2P message limit so
+  large MWEB blocks still relay. The release notes call for no reindex; the existing chain data is reused.
 widgets:
   - id: "sync"
     type: "text-with-progress"
@@ -97,4 +99,4 @@ backupIgnore:
   - data/.litecoin/regtest
   - data/.litecoin/debug.log
 submitter: Andreas
-submission: https://github.com/andreashetem-cloud/umbrel-dogecoin
+submission: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
