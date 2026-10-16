@@ -6,7 +6,7 @@
 # Nothing is pulled from third-party images.
 
 ARG DEBIAN_VERSION=bookworm-slim
-ARG LITECOIN_VERSION=0.21.4
+ARG LITECOIN_VERSION=0.21.5.8
 
 # ---------------------------------------------------------------------------
 # Stage 1: download + verify + extract
@@ -20,10 +20,11 @@ ARG LITECOIN_VERSION
 ARG TARGETARCH
 
 # SHA256 sums taken verbatim from
-# https://github.com/litecoin-project/litecoin/releases/download/v0.21.4/SHA256SUMS.asc
-# (PGP-signed by the Litecoin Core maintainers)
-ARG SHA256_AMD64=857fc41091f2bae65c3bf0fd4d388fca915fc93a03f16dd2578ac3cc92898390
-ARG SHA256_ARM64=517e3a9069e658eb92de98c934c61836589ee2410d99464a768a5698985926c9
+# https://github.com/litecoin-project/litecoin/releases/download/v0.21.5.8/SHA256SUMS.asc
+# (PGP-signed by the Litecoin Core maintainers), and identical in the copy at
+# https://download.litecoin.org/litecoin-0.21.5.8/SHA256SUMS.asc
+ARG SHA256_AMD64=43200c9f9d65ebc126ea5833ca9429e144c4b3273da6bb9f4e89fd7450ab1be9
+ARG SHA256_ARM64=129f55defb9045d5635566382c7b9f6fd227d4106a6fc07847a38b25ff9b29a1
 
 # Debian package versions are deliberately unpinned: the archive rotates them
 # out, and a pinned version turns into an unbuildable image within months. What

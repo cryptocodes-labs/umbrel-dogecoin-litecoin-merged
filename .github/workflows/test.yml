@@ -35,7 +35,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/litecoin-*.tar.gz
-          key: litecoin-core-0.21.4-${{ runner.arch }}
+          key: litecoin-core-0.21.5.8-${{ runner.arch }}
 
       - name: Entrypoint and config-generation suite
         run: bash ./test/entrypoint.sh
@@ -116,6 +116,13 @@ jobs:
 
       - name: Integration suite
         run: bash ./test/integration.sh
+
+      # The one merged-mining claim that only the daemons can settle: a Dogecoin
+      # block committed into a Litecoin parent built by our code is accepted by
+      # dogecoind AND litecoind. Runs the exact releases the images pin, so a
+      # node upgrade is tested here before it ships.
+      - name: Merged mining against real litecoind and dogecoind
+        run: bash ./test/merged_regtest.sh
 
   lint:
     runs-on: ubuntu-latest

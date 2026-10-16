@@ -40,17 +40,17 @@ description: >-
   block. The dashboard shows your real expected time so you can decide for yourself. Much lottery.
   Very patience.
 developer: Andreas
-website: https://github.com/andreashetem-cloud/umbrel-dogecoin
+website: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
 dependencies:
   - doge-dogecoin-node
-repo: https://github.com/andreashetem-cloud/umbrel-dogecoin
-support: https://github.com/andreashetem-cloud/umbrel-dogecoin/issues
+repo: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
+support: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/issues
 port: 22551
-icon: https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-solo/icon.svg
+icon: https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-solo/icon.svg
 gallery:
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-solo/gallery/1.jpg
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-solo/gallery/2.jpg
-  - https://raw.githubusercontent.com/andreashetem-cloud/umbrel-dogecoin/main/doge-dogecoin-solo/gallery/3.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-solo/gallery/1.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-solo/gallery/2.jpg
+  - https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-dogecoin-solo/gallery/3.jpg
 path: ""
 defaultPassword: ""
 deterministicPassword: false
@@ -254,4 +254,4 @@ widgets:
           text: "0"
           subtext: "found"
 submitter: Andreas
-submission: https://github.com/andreashetem-cloud/umbrel-dogecoin
+submission: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
