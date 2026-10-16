@@ -125,5 +125,10 @@ for suite in merged_regtest public_aux_regtest merged_pool public_merged_pool pu
   echo "== ${suite}"
   node "${REPO_ROOT}/test/${suite}.js" "${LTC_RPC}" "${DOGE_RPC}" "${STRATUM_PORT}" || status=1
   STRATUM_PORT=$((STRATUM_PORT + 10))
+  # getblocktemplate hands back its cached template until the tip moves or 5
+  # seconds have passed since it was built (src/rpc/mining.cpp, Litecoin and
+  # Dogecoin alike). A suite that sends a transaction and expects the next
+  # template to carry it would otherwise see the previous suite's template.
+  sleep 6
 done
 exit "${status}"
