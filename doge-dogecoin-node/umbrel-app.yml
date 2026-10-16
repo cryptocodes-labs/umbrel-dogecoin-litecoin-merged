@@ -2,7 +2,7 @@ manifestVersion: 1
 id: doge-dogecoin-node
 category: bitcoin
 name: Dogecoin Node
-version: "1.14.9-1"
+version: "1.14.9-2"
 tagline: Run your own Dogecoin full node, powered by Dogecoin Core
 description: >-
   Run a full Dogecoin node on your Umbrel, powered by the official Dogecoin Core release binaries.
@@ -49,6 +49,12 @@ deterministicPassword: false
 torOnly: false
 installSize: 36000000000
 releaseNotes: >-
+  Maintenance release, Dogecoin Core unchanged (1.14.9). The node and dashboard images now come
+  from ghcr.io/cryptocodes-labs, where this app store's images moved; the old
+  ghcr.io/andreashetem-cloud address no longer exists, so a reinstall or a restore from backup of
+  the previous version could not download its images. Your chain data and settings are kept.
+
+
   Raises the node's RPC threads and work queue above Dogecoin Core's defaults of 4 and 16. A single
   getblocktemplate longpoll — which mining software holds open until the next block — occupies one of
   those four threads, and everything else then starts failing with "Work queue depth exceeded".
