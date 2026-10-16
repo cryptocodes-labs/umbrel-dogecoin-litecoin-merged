@@ -14,7 +14,7 @@ services:
       PROXY_AUTH_ADD: "true"
 
   app:
-    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.7.0
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.8.0
     restart: on-failure
     logging: *default-logging
     # Docker's default is 10 seconds, and the shutdown handler waits up to 130
@@ -346,6 +346,18 @@ services:
       LTC_RPC_USER: "${LTC_RPC_USER:-umbrel}"
       LTC_RPC_PASSWORD: "${LTC_RPC_PASSWORD:-}"
       LTC_PAYOUT_ADDRESS: "${LTC_PAYOUT_ADDRESS:-}"
+
+      # Pepecoin, merge-mined beside Dogecoin (merged mode only). Off while
+      # PEP_RPC_HOST or PEP_PAYOUT_ADDRESS is empty, which is the default; set
+      # both in .env to turn it on. PEP_RPC_HOST is the Pepecoin Node app's
+      # container, doge-pepecoin-node_pepecoind_1, and PEP_RPC_PASSWORD is shown
+      # on that app's dashboard. A Pepecoin node that is down or still syncing
+      # only leaves Pepecoin out; Litecoin and Dogecoin are never affected.
+      PEP_RPC_HOST: "${PEP_RPC_HOST:-}"
+      PEP_RPC_PORT: "${PEP_RPC_PORT:-33873}"
+      PEP_RPC_USER: "${PEP_RPC_USER:-umbrel}"
+      PEP_RPC_PASSWORD: "${PEP_RPC_PASSWORD:-}"
+      PEP_PAYOUT_ADDRESS: "${PEP_PAYOUT_ADDRESS:-}"
     healthcheck:
       test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s

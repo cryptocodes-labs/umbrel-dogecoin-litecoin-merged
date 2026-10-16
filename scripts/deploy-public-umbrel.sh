@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SRC=~/doge-public-src
-IMG=cryptocode/doge-public:1.7.0
+IMG=cryptocode/doge-public:1.8.0
 APP=doge-dogecoin-solo_app_1
 DIR=~/doge-public
 
@@ -23,10 +23,12 @@ echo "== building $IMG"
 sudo docker build -q -t "$IMG" "$SRC"
 
 mkdir -p "$DIR/data"
-# Node connection details and the two fee addresses come from the running app,
-# so nothing secret is typed or shown here. Everything else is set explicitly.
+# Node connection details and the fee addresses come from the running app, so
+# nothing secret is typed or shown here. Everything else is set explicitly.
+# That includes Pepecoin: set PEP_* in the app's .env and this port follows;
+# leave them out and it runs Litecoin + Dogecoin exactly as before.
 sudo docker inspect "$APP" --format '{{range .Config.Env}}{{println .}}{{end}}' \
-  | grep -E '^(RPC_HOST|RPC_PORT|RPC_USER|RPC_PASSWORD|LTC_RPC_HOST|LTC_RPC_PORT|LTC_RPC_USER|LTC_RPC_PASSWORD|PAYOUT_ADDRESS|LTC_PAYOUT_ADDRESS)=' \
+  | grep -E '^(RPC_HOST|RPC_PORT|RPC_USER|RPC_PASSWORD|LTC_RPC_HOST|LTC_RPC_PORT|LTC_RPC_USER|LTC_RPC_PASSWORD|PAYOUT_ADDRESS|LTC_PAYOUT_ADDRESS|PEP_RPC_HOST|PEP_RPC_PORT|PEP_RPC_USER|PEP_RPC_PASSWORD|PEP_PAYOUT_ADDRESS)=' \
   > "$DIR/env"
 cat >> "$DIR/env" <<'EOF'
 MERGED_MINING=1
@@ -60,4 +62,4 @@ sudo docker run -d --name doge-public --restart unless-stopped --network "$NET" 
   "$IMG" >/dev/null
 echo "== container started, waiting 20s"
 sleep 20
-sudo docker logs doge-public 2>&1 | grep -E 'PUBLIC merged|stratum listening|new merged job|error|Error|refus' | tail -6
+sudo docker logs doge-public 2>&1 | grep -E 'PUBLIC merged|Pepecoin|stratum listening|new merged job|error|Error|refus' | tail -8
