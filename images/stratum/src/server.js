@@ -175,6 +175,13 @@ const config = {
   // a Dogecoin address here decodes perfectly well and would silently pay a
   // hash160 nobody on Litecoin can spend.
   ltcPayoutAddress: (process.env.LTC_PAYOUT_ADDRESS || '').trim(),
+  // Public merged mining (PUBLIC_MERGED=1, needs MERGED_MINING=1): a port for
+  // other people. Each miner is paid on both chains at the addresses in its
+  // username, "<LTC address>.<DOGE address>[.worker]", and the two addresses
+  // above receive POOL_FEE_PERCENT of every block instead. Meant to run as a
+  // SEPARATE container beside the private one, never instead of it.
+  publicMerged: process.env.PUBLIC_MERGED === '1',
+  poolFeePercent: Number(process.env.POOL_FEE_PERCENT || 1),
 
   stratumPort: STRATUM_PORT,
   // Stratum-space difficulties (scrypt, so one share costs D * 2^16 hashes).
@@ -284,6 +291,14 @@ if (config.rentedStratumPort && !config.lockPayoutAddress) {
     '[config] RENTED_STRATUM_PORT is set, which opens a second stratum port meant to be reachable ' +
       'from the internet for a rented order. Set LOCK_PAYOUT_ADDRESS=1, or remove RENTED_STRATUM_PORT.'
   );
+  process.exit(1);
+}
+
+// Public merged mode is defined on top of merged mining; on its own it would
+// silently be a Dogecoin-only pool that ignores the username format it tells
+// miners to use.
+if (config.publicMerged && !config.mergedMining) {
+  console.error('[config] PUBLIC_MERGED=1 requires MERGED_MINING=1.');
   process.exit(1);
 }
 
