@@ -115,11 +115,15 @@ doge_cli generate 80 >/dev/null
 for _ in $(seq 1 60); do [[ "$(doge_cli getconnectioncount 2>/dev/null)" == "1" ]] && break; sleep 1; done
 echo "litecoin height $(ltc_cli getblockcount), dogecoin height $(doge_cli getblockcount), dogecoin peers $(doge_cli getconnectioncount)"
 
+STRATUM_PORT="${STRATUM_PORT:-24600}"
 status=0
-for suite in merged_regtest public_aux_regtest; do
+# Proofs against the daemons first, then the real pool started against them:
+# private merged mining, the public port, and both side by side.
+for suite in merged_regtest public_aux_regtest merged_pool public_merged_pool public_coexist; do
   [[ -f "${REPO_ROOT}/test/${suite}.js" ]] || continue
   echo
   echo "== ${suite}"
-  node "${REPO_ROOT}/test/${suite}.js" "${LTC_RPC}" "${DOGE_RPC}" || status=1
+  node "${REPO_ROOT}/test/${suite}.js" "${LTC_RPC}" "${DOGE_RPC}" "${STRATUM_PORT}" || status=1
+  STRATUM_PORT=$((STRATUM_PORT + 10))
 done
 exit "${status}"

@@ -58,6 +58,9 @@ jobs:
       - name: Merged template ordering
         run: node test/merged_ordering.js
 
+      - name: Public merged mining, pure functions
+        run: node test/public_unit.js
+
       - name: Node alarm state machine
         run: node test/health.js
 

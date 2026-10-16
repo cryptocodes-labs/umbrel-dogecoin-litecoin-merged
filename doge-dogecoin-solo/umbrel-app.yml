@@ -5,7 +5,7 @@ category: bitcoin
 # Litecoin Solo Mining" was shown as "Dogecoin + Litecoi…", which loses the one
 # word that says what the app is for.
 name: DOGE + LTC Solo
-version: "1.6.1"
+version: "1.7.0"
 tagline: Solo mine Dogecoin, or merge-mine Dogecoin and Litecoin, on your own nodes
 description: >-
   A stratum server that turns your Dogecoin node into a solo mining pool of one.
@@ -57,6 +57,15 @@ deterministicPassword: false
 torOnly: false
 installSize: 200000000
 releaseNotes: >-
+  Adds an optional public mode for merged mining (PUBLIC_MERGED=1), for running a port that
+  other people mine on, each paid at their own addresses. It runs as a separate container of
+  the same image next to this app and is off unless you turn it on: with PUBLIC_MERGED unset,
+  your own pool builds exactly the same coinbase as before, byte for byte. Miners use the
+  username <LTC address>.<DOGE address>[.rig]; the pool builds each miner's Dogecoin block
+  itself from getblocktemplate, paying 99% to the miner and POOL_FEE_PERCENT to you, and splits
+  the Litecoin coinbase the same way. See the README section "A public port".
+
+
   The Mining profile section stayed silent about the rented port in one case: when
   MINING_PROFILE was fixed in .env, the "Fixed at ..." message never mentioned a
   configured RENTED_STRATUM_PORT, even though that port was running fine. It now
