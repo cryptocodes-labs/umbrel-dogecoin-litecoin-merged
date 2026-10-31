@@ -11,7 +11,7 @@
 # public one is only touched when that worked.
 #
 set -uo pipefail
-NEW=ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.9.1@sha256:eb5d433d982b7199f0dcfee903ed2fa18cf87aa94dc010bf2bdf88048540830c
+NEW=ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.9.2@sha256:afc9aa5f3d57a1bab73b4753d7f15386d6b7dee243848b2302f44a211a0c6b05
 STAMP=$(date +%Y%m%d-%H%M%S)
 echo "== pulling $NEW"
 sudo docker pull -q "$NEW" || { echo "pull failed; nothing changed"; exit 1; }
