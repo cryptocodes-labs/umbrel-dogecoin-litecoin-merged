@@ -74,6 +74,7 @@ function makePool() {
     sent,
     log() {},
     recordNetworkDifficulty() {},
+    recordChainDifficulties() {},
     sendJob(client, job, isNew) { sent.push({ id: job.id, isNew }); },
     apply(t, a, reason, askedAt) {
       return Pool.prototype.onMergedTemplate.call(this, t, a, reason, askedAt);
