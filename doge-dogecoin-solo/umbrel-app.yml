@@ -6,7 +6,7 @@ category: bitcoin
 # which loses the one word that says what the app is for. Four coins only fit
 # without the spaces: 16 characters.
 name: DOGE+LTC+PEP+SOQ
-version: "1.9.2"
+version: "1.9.3"
 tagline: Solo mine Dogecoin, or merge-mine it with Litecoin, Pepecoin and Soqucoin, on your own nodes
 description: >-
   A stratum server that turns your Dogecoin node into a solo mining pool of one.
@@ -58,12 +58,17 @@ deterministicPassword: false
 torOnly: false
 installSize: 200000000
 releaseNotes: >-
-  The dashboard gets a card for every coin the pool mines (LTC, DOGE, PEP, SOQ): the network difficulty
-  with how the last retarget moved it and a line of its last twelve hours, how close the best share came,
-  the block height and reward, the network hashrate, the expected wait and the chance in a year, the blocks
-  found, and where a block pays, with a link to that coin's explorer. "Chance of a block" gives the odds per
-  coin. "Connect a miner" now says what the port actually does: on this private merged port any name will
-  do, and every block pays the configured addresses. The image is pinned by digest.
+  The dashboard lists every miner on this Umbrel, including those on the other pool containers it reads
+  (PEER_POOLS), grouped by the addresses they are paid at: hashrate now and its average over the last hour,
+  day and week, best share on this connection and ever, shares, last share and up-time. A miner that
+  dropped out in the last week stays in the list as offline. Tap any miner, on any port, for its last 24
+  hours. On the private port a long LTC.DOGE.PEP.rig username is now shown as rig@address, so two rigs of
+  one owner no longer share one name and one history. Miners' IP addresses never leave the pool that saw
+  them. The image is pinned by digest.
+
+
+  Earlier in 1.9: a card for every coin the pool mines (LTC, DOGE, PEP, SOQ) with its difficulty, how
+  close the best share came, the expected wait, the chance in a year and where a block pays.
 
 
   Optional Pepecoin merge mining, beside Dogecoin, under the same Litecoin work. Set PEP_RPC_HOST
