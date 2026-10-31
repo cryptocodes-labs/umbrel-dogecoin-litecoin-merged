@@ -53,6 +53,16 @@ const TOTAL_WORKER_SAMPLES = 12000;
 const TRANSIENT_SAMPLES = 30;
 const TRANSIENT_TTL_MS = 30 * 60 * 1000;
 const SHORT_SERIES_SAMPLES = 240;
+// Per-worker hourly means for a week: what the "7 days" figure is drawn from.
+// Kept apart from the minute series, because that one is cut down when many
+// workers share its budget; a week of hours is 168 entries a worker, small
+// enough to keep for every worker the history holds.
+const WORKER_HOUR_SAMPLES = 7 * 24;
+const WORKER_HOURS_TTL_MS = 7 * 24 * 3600 * 1000;
+// The least history an average is shown on: ten minutes for the hour, half an
+// hour for the day and the week. Fewer than that is a ramp-up, not an average.
+const MIN_MINUTES_HOUR = 10;
+const MIN_MINUTES_LONG = 30;
 // How far back to look for an existing hourly bucket. A clock that steps
 // backwards must not open a duplicate bucket for an hour we already have.
 const BUCKET_LOOKBACK = 4;
@@ -91,6 +101,11 @@ function emptyState() {
     // decision to re-anchor survives a restart.
     disagreeingSince: null,
     workersDisagreeingSince: null,
+    // The first whole hour from which every worker's hourly means exist. The
+    // week average divides by the pool's own running time from here on, not
+    // from before the hourly series existed: an update that adds them must not
+    // make every miner look seven times slower for a week.
+    workerHoursSince: null,
     // A null-prototype map. Worker names arrive from the network, and on a
     // plain object a worker called "__proto__" resolves to Object.prototype:
     // the entry is never created, every write lands on the prototype, and from
@@ -103,6 +118,56 @@ function emptyState() {
 const num = (v, fallback = 0) => (Number.isFinite(v) ? v : fallback);
 const arr = (v) => (Array.isArray(v) ? v : []);
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+
+// Folds one minute into a worker's hourly means: [hourTs, mean, minutes].
+function addHour(hours, ts, hashrate) {
+  const hour = Math.floor(ts / 3600) * 3600;
+  const last = hours[hours.length - 1];
+  if (last && last[0] === hour) {
+    last[2] += 1;
+    last[1] = Math.round(last[1] + (hashrate - last[1]) / last[2]);
+  } else if (!last || hour > last[0]) {
+    hours.push([hour, Math.round(hashrate), 1]);
+    while (hours.length > WORKER_HOUR_SAMPLES) hours.shift();
+  }
+}
+
+// A worker's mean over the minutes after `from`. The divisor is the number of
+// minutes the POOL sampled in that window: a minute the worker was absent
+// counts as zero, a minute the app itself was down counts for nobody. Null when
+// the window holds fewer than `min` minutes, or reaches back past the point
+// where this worker's series was cut to share the budget.
+function minuteAverage(pool, w, from, min) {
+  if (w && w.trimmedAt && w.trimmedAt > from + 60) return null;
+  let minutes = 0;
+  for (let i = pool.length - 1; i >= 0 && pool[i][0] > from; i--) minutes++;
+  let sum = 0;
+  let own = 0;
+  const list = w && Array.isArray(w.samples) ? w.samples : [];
+  for (let i = list.length - 1; i >= 0 && list[i][0] > from; i--) {
+    sum += list[i][1];
+    own++;
+  }
+  minutes = Math.max(minutes, own);
+  return minutes >= min ? sum / minutes : null;
+}
+
+// The same over whole hours from `from` (an hour boundary), from the hourly
+// means: each hour weighs as many minutes as were sampled in it.
+function hourAverage(pool, w, from, min) {
+  if (!Number.isFinite(from)) return null;
+  let minutes = 0;
+  for (let i = pool.length - 1; i >= 0 && pool[i][0] >= from; i--) minutes += pool[i][2] || 1;
+  let work = 0;
+  let own = 0;
+  const list = w && Array.isArray(w.hours) ? w.hours : [];
+  for (let i = list.length - 1; i >= 0 && list[i][0] >= from; i--) {
+    work += list[i][1] * list[i][2];
+    own += list[i][2];
+  }
+  minutes = Math.max(minutes, own);
+  return minutes >= min ? work / minutes : null;
+}
 
 class Store {
   constructor(filePath, log = () => {}) {
@@ -237,6 +302,7 @@ class Store {
     };
     s.disagreeingSince = anchor(parsed.disagreeingSince);
     s.workersDisagreeingSince = anchor(parsed.workersDisagreeingSince);
+    s.workerHoursSince = anchor(parsed.workerHoursSince);
 
     for (const [k, v] of Object.entries(obj(parsed.rejectReasons))) {
       if (typeof k === 'string' && Number.isFinite(v)) s.rejectReasons[k.slice(0, 64)] = Math.floor(v);
@@ -279,6 +345,13 @@ class Store {
         samples: arr(w.samples)
           .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
           .slice(-WORKER_MINUTE_SAMPLES),
+        // Absent in a file written before the week figure existed: an empty
+        // series, filled from the next minute on.
+        hours: arr(w.hours)
+          .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+          .map((p) => [p[0], p[1], Number.isFinite(p[2]) && p[2] >= 1 ? Math.floor(p[2]) : 1])
+          .slice(-WORKER_HOUR_SAMPLES),
+        trimmedAt: anchor(w.trimmedAt),
       };
     }
     this.state = s;
@@ -361,7 +434,15 @@ class Store {
       s.minuteSamples = [];
       s.hourSamples = [];
       s.shareLog = [];
-      for (const w of Object.values(s.workers)) w.samples = [];
+      for (const w of Object.values(s.workers)) {
+        w.samples = [];
+        w.hours = [];
+        w.trimmedAt = null;
+      }
+      // The averages divide by the pool's running time, which was just cleared
+      // with the charts; they start again from the next whole hour.
+      s.workerHoursSince = null;
+      this.averageCache = null;
       cleared.push('charts');
     }
 
@@ -465,6 +546,7 @@ class Store {
       this.state.workers[key] = {
         accepted: 0, rejected: 0, bestShareDiff: 0, bestShareAt: null,
         firstSeen: at, lastSeen: at, work: 0, rejectReasons: {}, samples: [],
+        hours: [], trimmedAt: null,
       };
     }
     // A worker restored from a v1 file has neither of the new fields; fill them
@@ -472,6 +554,7 @@ class Store {
     const w = this.state.workers[key];
     if (!w.rejectReasons) w.rejectReasons = {};
     if (!Array.isArray(w.samples)) w.samples = [];
+    if (!Array.isArray(w.hours)) w.hours = [];
     return w;
   }
 
@@ -505,6 +588,8 @@ class Store {
     if (!perWorker) return;
     const s = this.state;
     const ts = Math.round(at / 1000);
+    // From the next whole hour: the hour this starts in is only partly covered.
+    if (!s.workerHoursSince) s.workerHoursSince = Math.ceil(ts / 3600) * 3600;
     const entries = perWorker instanceof Map ? perWorker.entries() : Object.entries(perWorker);
     let behind = 0;
     for (const [name, hashrate] of entries) {
@@ -520,6 +605,7 @@ class Store {
       if (last && ts < last[0]) { behind++; continue; }
       w.samples.push([ts, Math.round(hashrate)]);
       while (w.samples.length > WORKER_MINUTE_SAMPLES) w.samples.shift();
+      addHour(w.hours, ts, hashrate);
     }
 
     // The same re-anchoring the combined series does, and for the same reason:
@@ -537,7 +623,9 @@ class Store {
         const horizon = ts + CLOCK_STEP_TOLERANCE_S;
         for (const w of Object.values(this.state.workers)) {
           if (Array.isArray(w.samples)) w.samples = w.samples.filter((p) => p[0] <= horizon);
+          if (Array.isArray(w.hours)) w.hours = w.hours.filter((p) => p[0] <= horizon);
         }
+        if (s.workerHoursSince > horizon) s.workerHoursSince = Math.ceil(ts / 3600) * 3600;
         this.log('re-anchored the per-worker history to the current time');
         s.workersDisagreeingSince = null;
       }
@@ -559,6 +647,10 @@ class Store {
     for (const [, w] of named) {
       if (w.samples && w.samples.length && now - (w.lastSeen || 0) > WORKER_SAMPLE_TTL_MS) {
         w.samples = [];
+      }
+      // The hourly means live a week, like the figure they are for.
+      if (w.hours && w.hours.length && now - (w.lastSeen || 0) > WORKER_HOURS_TTL_MS) {
+        w.hours = [];
       }
     }
     // Only the most recently seen workers carry a series at all. Fifty workers
@@ -592,7 +684,11 @@ class Store {
       const each = Math.max(SHORT_SERIES_SAMPLES,
         Math.floor(TOTAL_WORKER_SAMPLES / withSamples.length));
       for (const [, w] of withSamples) {
+        if (w.samples.length <= each) continue;
         while (w.samples.length > each) w.samples.shift();
+        // Where this series now starts. An average over a window reaching
+        // further back than this would count the cut minutes as idle ones.
+        w.trimmedAt = w.samples[0][0];
       }
     }
   }
@@ -666,7 +762,9 @@ class Store {
       // at a future timestamp forever, with no TTL able to clear them.
       for (const w of Object.values(s.workers)) {
         if (Array.isArray(w.samples)) w.samples = w.samples.filter((p) => p[0] <= horizon);
+        if (Array.isArray(w.hours)) w.hours = w.hours.filter((p) => p[0] <= horizon);
       }
+      if (s.workerHoursSince > horizon) s.workerHoursSince = Math.ceil(ts / 3600) * 3600;
       this.log(
         `the clock has been behind the stored history for ${Math.round(disagreedFor / 60)} minutes; ` +
           `re-anchoring to the current time and discarding ${dropped} future-dated sample(s)`
@@ -699,6 +797,61 @@ class Store {
     this.dirty = true;
   }
 
+  // A worker's stored record, or null. Never creates one: the status asks for
+  // every connected worker every few seconds, and a lookup must not write.
+  workerRecord(name) {
+    const key = String(name || 'worker').slice(0, 64);
+    return Object.prototype.hasOwnProperty.call(this.state.workers, key) ? this.state.workers[key] : null;
+  }
+
+  // One worker's average hashrate over the last hour, day and week, as the BTC
+  // and BCH pools show it: the work done in the window over the time in it
+  // (see minuteAverage). The hour and the day come from the minute series; the
+  // week from the hourly means, counted from workerHoursSince. Cached until the
+  // next minute is sampled: nothing it reads changes in between, and the status
+  // is asked for every few seconds by the dashboard and the other pools.
+  workerAverages(name, now = Date.now()) {
+    const s = this.state;
+    const lastMinute = s.minuteSamples.length ? s.minuteSamples[s.minuteSamples.length - 1][0] : 0;
+    if (!this.averageCache || this.averageCache.minute !== lastMinute) {
+      this.averageCache = { minute: lastMinute, byName: new Map() };
+    }
+    const key = String(name || 'worker').slice(0, 64);
+    const cached = this.averageCache.byName.get(key);
+    if (cached) return cached;
+    const w = this.workerRecord(key);
+    const ts = Math.round(now / 1000);
+    const weekFrom = Math.max(Math.floor((ts - 7 * 86400) / 3600) * 3600, s.workerHoursSince || Infinity);
+    const out = {
+      h1: minuteAverage(s.minuteSamples, w, ts - 3600, MIN_MINUTES_HOUR),
+      h24: minuteAverage(s.minuteSamples, w, ts - 86400, MIN_MINUTES_LONG),
+      d7: hourAverage(s.hourSamples, w, weekFrom, MIN_MINUTES_LONG),
+    };
+    this.averageCache.byName.set(key, out);
+    return out;
+  }
+
+  // Workers seen in the last week that are not connected now, most recent
+  // first. The miner that dropped out last night is the one worth seeing; a
+  // table of only the connected ones cannot show it.
+  offlineWorkers(connected, now = Date.now(), max = 20) {
+    const out = [];
+    for (const [name, w] of Object.entries(this.state.workers)) {
+      if (!w || connected.has(name) || now - (w.lastSeen || 0) > WORKER_HOURS_TTL_MS) continue;
+      out.push({
+        worker: name,
+        firstSeen: w.firstSeen || null,
+        lastSeen: w.lastSeen || null,
+        accepted: w.accepted || 0,
+        rejected: w.rejected || 0,
+        bestShareDiff: w.bestShareDiff || 0,
+        bestShareAt: w.bestShareAt || null,
+        avg: this.workerAverages(name, now),
+      });
+    }
+    return out.sort((a, b) => b.lastSeen - a.lastSeen).slice(0, max);
+  }
+
   // Keep only the most recently seen workers, so a rotating cast of worker
   // names cannot grow the file forever.
   trimWorkers() {
@@ -713,6 +866,6 @@ class Store {
 
 module.exports = {
   Store, VERSION, MIGRATABLE, MINUTE_SAMPLES, HOUR_SAMPLES, SHARE_LOG, BLOCK_LOG,
-  WORKER_MINUTE_SAMPLES, CLOCK_STEP_TOLERANCE_S,
+  WORKER_MINUTE_SAMPLES, WORKER_HOUR_SAMPLES, CLOCK_STEP_TOLERANCE_S,
   TOTAL_WORKER_SAMPLES, SHORT_SERIES_SAMPLES, RE_ANCHOR_AFTER_SECONDS,
 };

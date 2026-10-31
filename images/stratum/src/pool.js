@@ -1943,9 +1943,8 @@ class Pool extends EventEmitter {
     // newline lets anyone who can reach this port write forged lines into the
     // container log — including a convincing "BLOCK ACCEPTED" — and the same
     // string is stored and served to the dashboard.
-    client.worker = String(username || 'worker')
-      .replace(/[\u0000-\u001f\u007f]/g, '')
-      .slice(0, 64) || 'worker';
+    const cleanName = String(username || 'worker').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
+    client.worker = workerName(cleanName) || 'worker';
     client.payoutScript = null;
     client.payoutAddress = null;
 
@@ -2002,7 +2001,9 @@ class Pool extends EventEmitter {
     // reachable by anyone you would not hand a block to — with it on, every
     // block pays the configured address no matter what a worker asks for.
     if (!this.config.lockPayoutAddress) {
-      const candidate = client.worker.split('.')[0];
+      // From the username itself, not the display name: a long one is shown as
+      // "rig@address", which is not an address.
+      const candidate = cleanName.split('.')[0];
       try {
         const script = u.addressToScript(candidate, this.chain);
         // Decide here whether this address can actually be honoured, and say so
@@ -2757,40 +2758,57 @@ class Pool extends EventEmitter {
   }
 
   snapshot() {
+    const now = Date.now();
     const workers = [...this.clients.values()]
       .filter((c) => c.authorized)
-      .map((c) => ({
-        id: c.id,
-        // Which port this worker is on — 'primary' or 'rented'. Lets the
-        // dashboard label a worker instead of leaving it to be inferred from
-        // its difficulty, which a fast home miner can otherwise approach.
-        entry: c.entry,
-        worker: c.worker,
-        userAgent: c.userAgent,
-        remote: c.remote,
-        difficulty: c.difficulty,
-        hashrate: this.clientHashrate(c),
-        accepted: c.accepted,
-        rejected: c.rejected,
-        bestShareDiff: c.bestShareDiff,
-        payoutAddress: c.payoutAddress || this.config.payoutAddress,
-        // The worker's own Litecoin and Pepecoin addresses, from a public
-        // username. Null on the private port, and pepPayoutAddress is null for
-        // a public miner that gave no Pepecoin address: the pool overview
-        // counts only the miners that actually mine Pepecoin as PEP hashrate.
-        ltcPayoutAddress: c.ltcPayoutAddress || null,
-        pepPayoutAddress: c.pepPayoutAddress || null,
-        connectedAt: c.connectedAt,
-        lastShareAt: c.lastShareAt,
-        latencyMs: c.latencyMs == null ? null : c.latencyMs,
-        latencyFrom: c.latencyFrom || null,
-        rejectReasons: { ...(c.rejectReasons || {}) },
-        // Recent share timestamps, so the dashboard can show the rhythm of a
-        // worker rather than just a number. A miner that stalled two minutes
-        // ago looks identical to a healthy one on an averaged hashrate.
-        shareHistory: c.shareTimes.slice(-48).map((s) => s.at),
-      }));
+      .map((c) => this.workerView(c, now));
+    return this.snapshotWith(workers, now);
+  }
 
+  // One connected worker as the status shows it: the live connection, plus what
+  // the stored history knows about the same name — its averages over an hour, a
+  // day and a week, its best share ever and its shares since the last reset.
+  // The live figures restart with every reconnect; these do not.
+  workerView(c, now) {
+    const stored = this.store ? this.store.workerRecord(c.worker) : null;
+    return {
+      id: c.id,
+      // Which port this worker is on — 'primary' or 'rented'. Lets the
+      // dashboard label a worker instead of leaving it to be inferred from
+      // its difficulty, which a fast home miner can otherwise approach.
+      entry: c.entry,
+      worker: c.worker,
+      userAgent: c.userAgent,
+      remote: c.remote,
+      difficulty: c.difficulty,
+      hashrate: this.clientHashrate(c),
+      accepted: c.accepted,
+      rejected: c.rejected,
+      bestShareDiff: c.bestShareDiff,
+      payoutAddress: c.payoutAddress || this.config.payoutAddress,
+      // The worker's own Litecoin and Pepecoin addresses, from a public
+      // username. Null on the private port, and pepPayoutAddress is null for
+      // a public miner that gave no Pepecoin address: the pool overview
+      // counts only the miners that actually mine Pepecoin as PEP hashrate.
+      ltcPayoutAddress: c.ltcPayoutAddress || null,
+      pepPayoutAddress: c.pepPayoutAddress || null,
+      connectedAt: c.connectedAt,
+      lastShareAt: c.lastShareAt,
+      latencyMs: c.latencyMs == null ? null : c.latencyMs,
+      latencyFrom: c.latencyFrom || null,
+      rejectReasons: { ...(c.rejectReasons || {}) },
+      // Recent share timestamps, so the dashboard can show the rhythm of a
+      // worker rather than just a number. A miner that stalled two minutes
+      // ago looks identical to a healthy one on an averaged hashrate.
+      shareHistory: c.shareTimes.slice(-48).map((s) => s.at),
+      avg: this.store ? this.store.workerAverages(c.worker, now) : null,
+      bestEverDiff: Math.max(c.bestShareDiff || 0, stored ? stored.bestShareDiff || 0 : 0),
+      totalAccepted: stored ? stored.accepted : c.accepted,
+      firstSeen: stored ? stored.firstSeen : c.connectedAt,
+    };
+  }
+
+  snapshotWith(workers, now) {
     const job = this.currentJob;
     // In merged mode the headline numbers stay DOGECOIN's — height, difficulty,
     // reward. This is a Dogecoin app: "how long until a block" means a Dogecoin
@@ -2973,9 +2991,36 @@ class Pool extends EventEmitter {
       // found; the dashboard has no use for it.
       blocks: this.stats.blocks.map(({ blockHex, ...rest }) => rest),
       workers,
+      // Seen in the last week, not connected now: a miner that dropped out
+      // shows up as gone instead of simply vanishing from the table.
+      offlineWorkers: this.store
+        ? this.store.offlineWorkers(new Set(workers.map((w) => w.worker)), now)
+        : [],
       totalHashrate: workers.reduce((s, w) => s + w.hashrate, 0),
     };
   }
+}
+
+// The name a worker is shown and counted under. Usually its username, cut at
+// 64 characters. But a username in the public form — addresses, then a rig
+// name: "LTC.DOGE.PEP.rig" — is over a hundred characters, and cut at 64 every
+// rig of one owner gets the same name: their shares, best share and history
+// are then added up as if they were one machine. Such a name becomes
+// "rig@<Dogecoin address>", exactly as the public port names it.
+// Base58 (Litecoin, Dogecoin, Pepecoin) or bech32 (ltc1…, sq1…): the shapes an
+// address can have, so a long rig name is not mistaken for one.
+const ADDRESS_PART = /^(?:[1-9A-HJ-NP-Za-km-z]{25,35}|(?:ltc|tltc|rltc|sq|ssq)1[02-9ac-hj-np-z]{20,90})$/;
+function workerName(raw) {
+  const name = String(raw);
+  if (name.length <= 64) return name;
+  const parts = name.split('.');
+  let n = 0;
+  while (n < parts.length && ADDRESS_PART.test(parts[n])) n++;
+  if (n === 0) return name.slice(0, 64);
+  // LTC.DOGE[.PEP]: the Dogecoin address is the second; DOGE[.x]: the first.
+  const doge = n >= 2 ? parts[1] : parts[0];
+  const rig = parts.slice(n).join('.').slice(0, 20);
+  return `${rig ? `${rig}@` : ''}${doge}`.slice(0, 64);
 }
 
 function clamp(v, lo, hi) {
@@ -2995,4 +3040,4 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-module.exports = { Pool };
+module.exports = { Pool, workerName };
