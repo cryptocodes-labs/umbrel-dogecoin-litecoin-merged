@@ -76,6 +76,14 @@ fi
 if [[ "${PRUNE}" != "0" && "${TXINDEX}" == "1" ]]; then
   die "PRUNE and TXINDEX are mutually exclusive — a pruned node cannot keep a full transaction index."
 fi
+# Values that become whole config lines. A newline in any of them would add a
+# line of its own (blocknotify=…, say), so only the characters an address,
+# a port, a CIDR range or a network name needs are allowed.
+for pair in "RPC_ALLOW_IP:${RPC_ALLOW_IP}" "PROXY:${PROXY}" "ONLYNET:${ONLYNET}" \
+            "TOR_PROXY_IP:${TOR_PROXY_IP}" "TOR_PROXY_PORT:${TOR_PROXY_PORT}"; do
+  name="${pair%%:*}"; value="${pair#*:}"
+  [[ "${value}" =~ ^[A-Za-z0-9.:/,_-]*$ ]] || die "${name} may only contain letters, digits and . : / , _ -"
+done
 if [[ "${RPC_USER}" =~ [^A-Za-z0-9_.-] ]]; then
   die "RPC_USER may only contain letters, digits, dot, dash and underscore."
 fi
@@ -83,6 +91,14 @@ fi
 mkdir -p "${PEPECOIN_DATA}" "${DATA_ROOT}" \
   || die "Cannot create ${PEPECOIN_DATA} — is the data volume mounted?"
 [[ -w "${DATA_ROOT}" ]] || die "${DATA_ROOT} is not writable — is the data volume mounted?"
+
+# This script runs as root in a directory the daemon (uid 1000) can write to.
+# A symlink planted there would make root write — or read — wherever it points:
+# rpc-user -> /usr/local/bin/healthcheck.sh, then chowned to uid 1000, is root
+# in the container on the next healthcheck. So every file this script writes or
+# reads is replaced if it is a symlink, and nothing is chowned through one.
+drop_symlink() { if [[ -L "$1" ]]; then log "WARNING: removed a symlink at $1"; rm -f "$1"; fi; }
+for f in "${SECRET_FILE}" "${USER_FILE}" "${CONF}" "${CONF}.tmp" "${CUSTOM_CONF}"; do drop_symlink "${f}"; done
 
 # ---------------------------------------------------------------------------
 # RPC credentials
@@ -108,10 +124,12 @@ umask 077
 if [[ "${generated}" == "1" ]]; then
   # Only persist plaintext when we own the secret. When Umbrel supplies it via
   # the environment, both containers already have it and nothing hits the disk.
+  rm -f "${SECRET_FILE}"
   printf '%s' "${RPC_PASSWORD}" > "${SECRET_FILE}"
 else
   rm -f "${SECRET_FILE}"
 fi
+rm -f "${USER_FILE}"
 printf '%s' "${RPC_USER}" > "${USER_FILE}"
 
 # rpcauth=<user>:<salt>$<HMAC-SHA256(key=salt, msg=password)>
@@ -174,6 +192,7 @@ fi
     cat "${CUSTOM_CONF}"
   fi
 } > "${CONF}.tmp"
+drop_symlink "${CONF}"
 mv "${CONF}.tmp" "${CONF}"
 chmod 600 "${CONF}"
 
@@ -186,11 +205,11 @@ if [[ "$(stat -c %u "${PEPECOIN_DATA}" 2>/dev/null || echo 1000)" != "1000" ]]; 
   # Tolerate failure: on a filesystem that refuses chown (some network mounts)
   # or when we are not root, pepecoind may still be perfectly able to read and
   # write its own data. Refusing to start would be the worse outcome.
-  chown -R 1000:1000 "${DATA_ROOT}" \
+  chown -hR 1000:1000 "${DATA_ROOT}" \
     || log "WARNING: could not change ownership of ${DATA_ROOT}; continuing anyway"
 else
-  chown 1000:1000 "${DATA_ROOT}" "${CONF}" "${USER_FILE}" 2>/dev/null || true
-  if [[ -f "${SECRET_FILE}" ]]; then chown 1000:1000 "${SECRET_FILE}" 2>/dev/null || true; fi
+  chown -h 1000:1000 "${DATA_ROOT}" "${CONF}" "${USER_FILE}" 2>/dev/null || true
+  if [[ -f "${SECRET_FILE}" ]]; then chown -h 1000:1000 "${SECRET_FILE}" 2>/dev/null || true; fi
 fi
 
 log "Pepecoin Core $(pepecoind --version | head -1 | sed 's/.*version //')"
@@ -203,6 +222,9 @@ if [[ "${1:-}" == "pepecoind" ]]; then
     read -ra _extra <<< "${EXTRA_ARGS}"
     ARGS+=("${_extra[@]}")
   fi
+  # The daemon has no use for the plain-text password; keep it out of its
+  # environment (readable at /proc/<pid>/environ by its own uid).
+  unset RPC_PASSWORD
   exec gosu pepecoin pepecoind "${ARGS[@]}" "$@"
 fi
 

@@ -24,8 +24,8 @@ const { MergedJob, LTC_RULES } = require('./merged');
 const { EXTRANONCE1_SIZE, EXTRANONCE2_SIZE } = require('./job');
 
 const env = process.env;
-const doge = new RpcClient({ host: env.RPC_HOST, port: Number(env.RPC_PORT || 22555), user: env.RPC_USER || 'umbrel', password: env.RPC_PASSWORD || '' });
-const ltc = new RpcClient({ host: env.LTC_RPC_HOST, port: Number(env.LTC_RPC_PORT || 9332), user: env.LTC_RPC_USER || 'umbrel', password: env.LTC_RPC_PASSWORD || '' });
+const doge = new RpcClient({ host: env.RPC_HOST, port: Number(env.RPC_PORT || 22555), user: env.RPC_USER || 'umbrel', password: env.RPC_PASSWORD || '', singleAddress: true });
+const ltc = new RpcClient({ host: env.LTC_RPC_HOST, port: Number(env.LTC_RPC_PORT || 9332), user: env.LTC_RPC_USER || 'umbrel', password: env.LTC_RPC_PASSWORD || '', singleAddress: true });
 const pct = Number(env.POOL_FEE_PERCENT || 1);
 const tag = env.COINBASE_TAG || '/umbrel-doge-solo/';
 

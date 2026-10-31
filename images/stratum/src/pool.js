@@ -89,15 +89,19 @@ class Pool extends EventEmitter {
     // Optional durable history. Everything below works without it; the pool
     // simply forgets on restart.
     this.store = store;
-    this.rpc = new RpcClient(config.rpc);
+    // Every node connection refuses a host name that answers with more than
+    // one address: on umbrelOS's shared docker network that means another
+    // container claims the node's name, and would receive its password, its
+    // templates and our blocks (see singleAddressLookup in rpc.js).
+    this.rpc = new RpcClient({ ...config.rpc, singleAddress: true });
     // A second client for longpoll: those requests block for up to a minute and
     // must not sit in front of an urgent submitblock.
-    this.longpollRpc = new RpcClient({ ...config.rpc, timeout: 120000 });
+    this.longpollRpc = new RpcClient({ ...config.rpc, timeout: 120000, singleAddress: true });
     // A third for block submission. submitblock fully validates the block
     // before answering, which on a slow disk can take far longer than the
     // 15 seconds that is generous for every other call — and a timeout there
     // would look like a failure when the node is actually accepting it.
-    this.submitRpc = new RpcClient({ ...config.rpc, timeout: 180000 });
+    this.submitRpc = new RpcClient({ ...config.rpc, timeout: 180000, singleAddress: true });
 
     // Merged mining, off unless asked for. Everything below this line that
     // reads `this.merged` is dead code in Dogecoin-only mode, which is what
@@ -116,9 +120,9 @@ class Pool extends EventEmitter {
     this.publicMerged = this.merged && !!config.publicMerged;
     if (this.merged) {
       if (!config.ltcRpc) throw new Error('merged mining needs ltcRpc connection details');
-      this.ltcRpc = new RpcClient(config.ltcRpc);
-      this.ltcLongpollRpc = new RpcClient({ ...config.ltcRpc, timeout: 120000 });
-      this.ltcSubmitRpc = new RpcClient({ ...config.ltcRpc, timeout: 180000 });
+      this.ltcRpc = new RpcClient({ ...config.ltcRpc, singleAddress: true });
+      this.ltcLongpollRpc = new RpcClient({ ...config.ltcRpc, timeout: 120000, singleAddress: true });
+      this.ltcSubmitRpc = new RpcClient({ ...config.ltcRpc, timeout: 180000, singleAddress: true });
     }
 
     // Pepecoin: a further aux chain merge-mined beside Dogecoin, under the same
@@ -133,8 +137,8 @@ class Pool extends EventEmitter {
       this.pep = {
         name: 'PEP',
         label: 'Pepecoin',
-        rpc: new RpcClient({ ...config.pep.rpc, timeout: 5000 }),
-        submitRpc: new RpcClient({ ...config.pep.rpc, timeout: 180000 }),
+        rpc: new RpcClient({ ...config.pep.rpc, timeout: 5000, singleAddress: true }),
+        submitRpc: new RpcClient({ ...config.pep.rpc, timeout: 180000, singleAddress: true }),
         payoutAddress: config.pep.payoutAddress,
         block: null,
         unavailableSince: null,

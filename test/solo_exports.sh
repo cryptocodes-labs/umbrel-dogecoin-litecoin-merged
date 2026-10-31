@@ -92,8 +92,8 @@ check "PEER_POOLS comes through with its own = signs intact" \
 # The class of bug, not just the instance: every app setting the compose file
 # reads must be one this file lets through, or setting it in .env does nothing
 # at all — no error, no log line. umbrelOS's own variables (APP_*) come from
-# elsewhere. RENTED_STRATUM_PORT is read by the compose file but has never been
-# on the list; it is left as it is here and reported separately.
+# elsewhere. RENTED_STRATUM_PORT was the first casualty: set in .env since
+# October 2026, it never reached the app, and the rented port never listened.
 missing_keys=""
 COMPOSE="$(dirname "${EXPORTS}")/docker-compose.yml"
 compose_keys="$(grep -oE '\$\{[A-Z_]+' "${COMPOSE}" | sed 's/.*{//' | sort -u)"
@@ -101,7 +101,7 @@ compose_keys="$(grep -oE '\$\{[A-Z_]+' "${COMPOSE}" | sed 's/.*{//' | sort -u)"
 [[ "$(wc -w <<< "${compose_keys}")" -ge 20 ]] && ok "the compose file's settings were found" \
   || bad "the compose file's settings were found" "only: ${compose_keys}"
 for key in ${compose_keys}; do
-  case "${key}" in APP_*|RENTED_STRATUM_PORT) continue ;; esac
+  case "${key}" in APP_*) continue ;; esac
   [[ "$(run_with_env "${key}=x
 " "${key}")" == "x" ]] || missing_keys="${missing_keys} ${key}"
 done

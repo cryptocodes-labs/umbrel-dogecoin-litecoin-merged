@@ -6,19 +6,24 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege for every job: read the repository, nothing else. A job that
+# needs more says so itself (publishing images needs packages: write).
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
       # ubuntu-latest ships an externally-managed Python (PEP 668), so a bare
       # `pip install` fails. setup-python gives us an interpreter we own.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -26,19 +31,19 @@ jobs:
         run: pip install --quiet pyyaml
 
       - name: Cache the Dogecoin Core release tarball
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/dogecoin-*.tar.gz
           key: dogecoin-core-1.14.9-${{ runner.arch }}
 
       - name: Cache the Pepecoin Core release tarball
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/pepecoin-*.tar.gz
           key: pepecoin-core-1.1.0-${{ runner.arch }}
 
       - name: Cache the Litecoin Core release tarball
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/litecoin-*.tar.gz
           key: litecoin-core-0.21.5.8-${{ runner.arch }}
@@ -85,6 +90,11 @@ jobs:
       # network and added up for the umbrelOS widgets; hostile answers refused.
       - name: Other ports on the dashboard and widgets
         run: node test/peers_http.js
+
+      # The node dashboard's RPC password goes only to the app proxy, and not
+      # to a host name another container also answers to.
+      - name: Node dashboard credentials gate
+        run: node test/ui_credentials.js
 
       - name: Which workers mine Pepecoin, per the status snapshot
         run: node test/pep_snapshot_unit.js
@@ -155,37 +165,47 @@ jobs:
       - name: Merged mining against real litecoind and dogecoind
         run: bash ./test/merged_regtest.sh
 
+  # Every node image run exactly as its umbrelOS app runs it — read-only,
+  # tmpfs /tmp, pids limit, minimal capabilities, healthcheck as the daemon's
+  # user — on regtest. Proves the hardening does not stop a node from starting.
+  hardened:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Node images under the hardened profile
+        run: bash ./test/hardened_containers.sh
+
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Lint the node Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: images/core/Dockerfile
           failure-threshold: error
 
       - name: Lint the Litecoin node Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: images/ltc-core/Dockerfile
           failure-threshold: error
 
       - name: Lint the Pepecoin node Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: images/pep-core/Dockerfile
           failure-threshold: error
 
       - name: Lint the Soqucoin node Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: images/soq-core/Dockerfile
           failure-threshold: error
 
       - name: Lint the dashboard Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: images/ui/Dockerfile
           failure-threshold: error
@@ -216,11 +236,11 @@ jobs:
     # every stage for both platforms and discards the result.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build dogecoind (amd64 + arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: images/core
           platforms: linux/amd64,linux/arm64
@@ -228,7 +248,7 @@ jobs:
           cache-from: type=gha,scope=core
           cache-to: type=gha,mode=max,scope=core
       - name: Build litecoind (amd64 + arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: images/ltc-core
           platforms: linux/amd64,linux/arm64
@@ -236,7 +256,7 @@ jobs:
           cache-from: type=gha,scope=ltc-core
           cache-to: type=gha,mode=max,scope=ltc-core
       - name: Build pepecoind (amd64 + arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: images/pep-core
           platforms: linux/amd64,linux/arm64
@@ -244,7 +264,7 @@ jobs:
           cache-from: type=gha,scope=pep-core
           cache-to: type=gha,mode=max,scope=pep-core
       - name: Build soqucoind (amd64 + arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: images/soq-core
           platforms: linux/amd64,linux/arm64
@@ -252,7 +272,7 @@ jobs:
           cache-from: type=gha,scope=soq-core
           cache-to: type=gha,mode=max,scope=soq-core
       - name: Build the stratum server (amd64 + arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: images/stratum
           platforms: linux/amd64,linux/arm64
@@ -260,7 +280,7 @@ jobs:
           cache-from: type=gha,scope=stratum
           cache-to: type=gha,mode=max,scope=stratum
       - name: Build the dashboard (amd64 + arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: images/ui
           platforms: linux/amd64,linux/arm64
