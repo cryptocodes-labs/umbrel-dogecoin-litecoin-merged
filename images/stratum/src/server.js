@@ -12,6 +12,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { Pool } = require('./pool');
+const { singleAddressLookup } = require('./rpc');
 const { Store } = require('./store');
 const { PushService } = require('./push');
 const { HealthMonitor } = require('./health');
@@ -205,6 +206,28 @@ const config = {
       : null,
   pepPollMs: Math.max(500, num('PEP_POLL_MS', 2000)),
 
+  // Soqucoin, a third aux chain beside Dogecoin and Pepecoin. On only when
+  // SOQ_RPC_HOST and SOQ_PAYOUT_ADDRESS are both set, and only in PRIVATE
+  // merged mode (with PUBLIC_MERGED=1 it is ignored and the log says so).
+  // Every Soqucoin block pays SOQ_PAYOUT_ADDRESS, an sq1p… address. soqucoind
+  // must run with enablemining=1, which mainnet does not default to.
+  soq:
+    process.env.SOQ_RPC_HOST && (process.env.SOQ_PAYOUT_ADDRESS || '').trim()
+      ? {
+          rpc: {
+            host: process.env.SOQ_RPC_HOST,
+            port: num('SOQ_RPC_PORT', 33389),
+            user: process.env.SOQ_RPC_USER || 'umbrel',
+            password: process.env.SOQ_RPC_PASSWORD || '',
+          },
+          payoutAddress: (process.env.SOQ_PAYOUT_ADDRESS || '').trim(),
+        }
+      : null,
+  // Every second: a new Soqucoin tip is only seen by polling, and work built on
+  // the old one can no longer win. createauxblock is answered from soqucoind's
+  // cache until the tip moves, so the cost is one small call a second.
+  soqPollMs: Math.max(500, num('SOQ_POLL_MS', 1000)),
+
   stratumPort: STRATUM_PORT,
   // Stratum-space difficulties (scrypt, so one share costs D * 2^16 hashes).
   // 2048 lands a 11 MH/s miner at ~12s per share and a 70 MH/s miner at ~2s,
@@ -328,9 +351,13 @@ if (config.publicMerged && !config.mergedMining) {
 // profile is only useful if it actually reaches the pool, and asserting that
 // from outside the process is the only test that proves it.
 if (process.env.DUMP_CONFIG === '1') {
-  // ltcRpc goes the same way as rpc: it carries a password. So does pep.
-  const { rpc, payoutAddress, ltcRpc, ltcPayoutAddress, pep, ...safe } = config;
-  console.log(`CONFIG ${JSON.stringify({ ...safe, pep: pep ? { host: pep.rpc.host, port: pep.rpc.port } : null })}`);
+  // ltcRpc goes the same way as rpc: it carries a password. So do pep and soq.
+  const { rpc, payoutAddress, ltcRpc, ltcPayoutAddress, pep, soq, ...safe } = config;
+  console.log(`CONFIG ${JSON.stringify({
+    ...safe,
+    pep: pep ? { host: pep.rpc.host, port: pep.rpc.port } : null,
+    soq: soq ? { host: soq.rpc.host, port: soq.rpc.port } : null,
+  })}`);
   process.exit(0);
 }
 
@@ -671,6 +698,178 @@ function snapshotOrNull() {
   }
 }
 
+// ---- the other pool containers on this Umbrel (PEER_POOLS) ----
+//
+// The public LTC + DOGE ports run as their own containers beside this app
+// (scripts/deploy-public-umbrel.sh), and umbrelOS only shows apps. So this app
+// can read their status — the same /api/status this server answers — over
+// umbrelOS's internal docker network and show it on its dashboard and widgets.
+//
+//   PEER_POOLS="3335=doge-public:3000,3339=doge-public-rental:3000"
+//
+// A label, then the host:port of another container's dashboard. Read-only, a
+// GET to a fixed path on hosts the owner configured, never anything a browser
+// supplies; at most eight, each answer capped in size and trimmed to the few
+// figures the dashboard shows. A peer that is down is shown as down and costs
+// this pool nothing.
+const PEER_POLL_MS = 15000;
+const PEER_TIMEOUT_MS = 3000;
+const PEER_MAX_BYTES = 2 * 1024 * 1024;
+
+function parsePeerPools(raw) {
+  const out = [];
+  for (const part of String(raw || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+    const m = /^([A-Za-z0-9 ._-]{1,32})=([a-z0-9][a-z0-9._-]{0,62}):(\d{1,5})$/.exec(part);
+    if (!m || Number(m[3]) < 1 || Number(m[3]) > 65535) {
+      console.log(`PEER_POOLS: ignoring "${part}" (expected label=host:port)`);
+      continue;
+    }
+    out.push({ name: m[1], host: m[2], port: Number(m[3]) });
+  }
+  return out.slice(0, 8);
+}
+
+// The figures of a peer's status that the dashboard and widgets use. A 1.8.x
+// peer has no `chains`; its Litecoin and Dogecoin difficulties are still in
+// the status under their older names.
+function trimPeerStatus(s) {
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  let chains = Array.isArray(s.chains) ? s.chains : [];
+  if (!chains.length) {
+    if (s.merged && s.merged.parentDifficulty) {
+      chains.push({ name: 'LTC', label: 'Litecoin', height: s.merged.parentHeight, difficulty: s.merged.parentDifficulty });
+    }
+    if (s.networkDifficulty) chains.push({ name: 'DOGE', label: 'Dogecoin', height: s.height, difficulty: s.networkDifficulty });
+  }
+  chains = chains.slice(0, 8).map((c) => ({
+    name: String(c.name || '').slice(0, 8),
+    label: String(c.label || c.name || '').slice(0, 24),
+    height: num(c.height),
+    difficulty: num(c.difficulty),
+    // A chain that is not in every job (PEP, SOQ) carries its own best share:
+    // only shares made while it was being mined. Absent: the pool's best. The
+    // same for the hashrate that can win it.
+    ...(typeof c.best === 'number' && Number.isFinite(c.best) ? { best: c.best } : {}),
+    ...(typeof c.hashrate === 'number' && Number.isFinite(c.hashrate) ? { hashrate: c.hashrate } : {}),
+  }));
+  return {
+    totalHashrate: num(s.totalHashrate),
+    workerCount: Array.isArray(s.workers) ? s.workers.length : 0,
+    bestShareDiff: num(s.bestShareDiff),
+    bestShareStratum: num(s.bestShareStratum),
+    bestShareAt: num(s.bestShareAt) || null,
+    blocksFound: num(s.blocksFound),
+    chains,
+  };
+}
+
+function fetchPeerStatus(peer) {
+  return new Promise((settle) => {
+    // One answer per request, and a deadline for the WHOLE exchange: the
+    // socket timeout alone only fires after a silence, so a peer trickling a
+    // byte every few seconds would otherwise hold the request open for ever.
+    let settled = false;
+    let deadline = null;
+    const resolve = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      settle(v);
+    };
+    const req = http.get(
+      {
+        host: peer.host,
+        port: peer.port,
+        path: '/api/status',
+        timeout: PEER_TIMEOUT_MS,
+        headers: { Accept: 'application/json' },
+        // A name another container on the shared network also answers to is
+        // refused rather than read (see singleAddressLookup in rpc.js).
+        lookup: singleAddressLookup,
+      },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve({ ok: false, error: `HTTP ${res.statusCode}` });
+          return;
+        }
+        let size = 0;
+        const chunks = [];
+        // Destroying the request mid-body (too large, too slow) makes the
+        // response emit 'error'. Unhandled, that would take down this whole
+        // process — the pool included — for a fault in somebody else's.
+        res.on('error', (err) => resolve({ ok: false, error: err.message || err.code || 'connection lost' }));
+        res.on('data', (c) => {
+          size += c.length;
+          if (size > PEER_MAX_BYTES) {
+            req.destroy();
+            resolve({ ok: false, error: 'answer too large' });
+            return;
+          }
+          chunks.push(c);
+        });
+        res.on('end', () => {
+          try {
+            const s = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            resolve(s && s.ok ? { ok: true, status: trimPeerStatus(s) } : { ok: false, error: 'pool not running' });
+          } catch {
+            resolve({ ok: false, error: 'not a pool status' });
+          }
+        });
+      }
+    );
+    deadline = setTimeout(() => req.destroy(new Error('timed out')), PEER_TIMEOUT_MS);
+    req.on('timeout', () => req.destroy(new Error('timed out')));
+    // A name that resolves to several addresses fails with an AggregateError
+    // whose message is empty; its code (ECONNREFUSED, ENOTFOUND) is the reason.
+    req.on('error', (err) => resolve({ ok: false, error: err.message || err.code || 'unreachable' }));
+  });
+}
+
+const peerPools = parsePeerPools(process.env.PEER_POOLS);
+let peerResults = peerPools.map((p) => ({ name: p.name, ok: false, error: 'not read yet', at: null, status: null }));
+
+let peersPolling = false;
+async function pollPeers() {
+  // Never two rounds at once, so a slow round can neither pile up sockets nor
+  // land after a newer one and overwrite it.
+  if (peersPolling) return;
+  peersPolling = true;
+  try {
+    peerResults = await Promise.all(
+      peerPools.map(async (p) => ({ name: p.name, at: Date.now(), status: null, error: null, ...(await fetchPeerStatus(p)) }))
+    );
+  } finally {
+    peersPolling = false;
+  }
+}
+
+// This port plus every peer that answered: what the widgets show, so umbrelOS
+// tells the same story for LTC + DOGE as it does for the BTC and BCH apps,
+// whose public ports live inside the app itself.
+function combinedFigures(snap) {
+  const live = peerResults.filter((p) => p.ok && p.status).map((p) => p.status);
+  const own = snap ? trimPeerStatus({ ...snap, ok: true }) : null;
+  const all = own ? [own, ...live] : live;
+  const chains = (own && own.chains.length ? own : all.find((s) => s.chains.length) || { chains: [] }).chains;
+  // Per coin, the best share of the ports that mine that coin: a share on a
+  // port without Soqucoin could never have been a Soqucoin block.
+  const bestFor = (name) => Math.max(0, ...all.map((x) => {
+    const c = x.chains.find((k) => k.name === name);
+    return !c ? 0 : c.best !== undefined ? c.best : x.bestShareDiff;
+  }));
+  return {
+    peers: live.length,
+    bestFor,
+    totalHashrate: all.reduce((s, x) => s + x.totalHashrate, 0),
+    workerCount: all.reduce((s, x) => s + x.workerCount, 0),
+    bestShareDiff: Math.max(0, ...all.map((x) => x.bestShareDiff)),
+    bestShareStratum: Math.max(0, ...all.map((x) => x.bestShareStratum)),
+    blocksFound: all.reduce((s, x) => s + x.blocksFound, 0),
+    chains,
+  };
+}
+
 // Reads a small JSON body. Bounded before anything is parsed: this is the only
 // endpoint that accepts input from a browser, and an unbounded read is a way to
 // exhaust the process's memory with a single request.
@@ -953,24 +1152,42 @@ const server = http.createServer((req, res) => {
   // umbrelOS runs ms(widgetData.refresh) on every response, and ms() throws on
   // undefined. Every return path below must carry `refresh`, including the
   // degraded ones.
+  // The other pool containers' figures, trimmed (see PEER_POOLS above). An
+  // empty list when none are configured.
+  if (url.pathname === '/api/peers') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ peers: peerResults }));
+    return;
+  }
+
   if (url.pathname === '/api/widget/hashrate') {
     const snap = snapshotOrNull();
-    const hr = fmtHashrate(snap ? snap.totalHashrate : 0);
+    // This port plus the configured peers. Without PEER_POOLS it is exactly
+    // this port's figures, as before.
+    const all = combinedFigures(snap);
+    const hr = fmtHashrate(all.totalHashrate);
+    const doge = all.chains.find((c) => c.name === 'DOGE');
 
     // Progress on the same logarithmic scale the dashboard uses: how close the
-    // best share came to a block, across six decades. A linear ratio would sit
-    // at zero forever and say nothing.
+    // best share came to a Dogecoin block, across six decades. A linear ratio
+    // would sit at zero forever and say nothing. The label gives every coin
+    // the same hash could have won: one share, several difficulties.
     let progress = 0;
     let progressLabel = 'no shares yet';
-    if (snap && snap.bestShareDiff > 0 && snap.networkDifficulty > 0) {
-      const fraction = snap.bestShareDiff / snap.networkDifficulty;
+    const pct = (f) => {
+      const p = f * 100;
+      return p >= 100 ? 'BLOCK' : p >= 1 ? `${p.toFixed(1)}%` : `${p.toPrecision(2)}%`;
+    };
+    if (all.bestShareDiff > 0 && doge && doge.difficulty > 0) {
+      const fraction = all.bestFor('DOGE') / doge.difficulty;
       progress = Math.max(0, Math.min(1, (Math.log10(fraction) + 6) / 6));
-      const pct = fraction * 100;
       progressLabel =
-        fraction >= 1
-          ? 'a share met the full difficulty'
-          : `best share ${pct >= 1 ? pct.toFixed(1) : pct.toPrecision(2)}%`;
-    } else if (snap && !snap.workers.length) {
+        all.chains.length > 1
+          ? all.chains.filter((c) => c.difficulty > 0).map((c) => `${c.name} ${pct(all.bestFor(c.name) / c.difficulty)}`).join(' · ')
+          : fraction >= 1
+            ? 'a share met the full difficulty'
+            : `best share ${pct(fraction)}`;
+    } else if (!all.workerCount) {
       progressLabel = 'no miners connected';
     }
 
@@ -980,7 +1197,7 @@ const server = http.createServer((req, res) => {
         type: 'text-with-progress',
         refresh: SYNC_REFRESH,
         link: '',
-        title: 'Solo hashrate',
+        title: all.peers ? 'Hashrate, all ports' : 'Solo hashrate',
         text: `${hr.value} ${hr.unit}`,
         progressLabel,
         progress,
@@ -991,10 +1208,11 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === '/api/widget/stats') {
     const snap = snapshotOrNull();
-    const hr = fmtHashrate(snap ? snap.totalHashrate : 0);
+    const all = combinedFigures(snap);
+    const hr = fmtHashrate(all.totalHashrate);
     // Stratum units here, matching what a miner reports. The consensus-space
     // figure is a fraction for any realistic share and renders as "0".
-    const best = snap && snap.bestShareStratum ? snap.bestShareStratum : 0;
+    const best = all.bestShareStratum || 0;
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(
       JSON.stringify({
@@ -1003,13 +1221,17 @@ const server = http.createServer((req, res) => {
         link: '',
         items: [
           { title: 'Hashrate', text: hr.value, subtext: hr.unit },
-          { title: 'Workers', text: String(snap ? snap.workers.length : 0), subtext: 'connected' },
+          { title: 'Workers', text: String(all.workerCount), subtext: all.peers ? 'all ports' : 'connected' },
           {
             title: 'Best share',
-            text: best >= 1000000 ? `${(best / 1000000).toFixed(1)}M` : best >= 1000 ? `${(best / 1000).toFixed(1)}k` : best.toFixed(0),
+            text:
+              best >= 1e12 ? `${(best / 1e12).toFixed(1)}T`
+                : best >= 1e9 ? `${(best / 1e9).toFixed(1)}G`
+                  : best >= 1e6 ? `${(best / 1e6).toFixed(1)}M`
+                    : best >= 1e3 ? `${(best / 1e3).toFixed(1)}k` : best.toFixed(0),
             subtext: 'difficulty',
           },
-          { title: 'Blocks', text: String(snap ? snap.blocksFound : 0), subtext: 'found' },
+          { title: 'Blocks', text: String(all.blocksFound), subtext: 'found' },
         ],
       })
     );
@@ -1063,6 +1285,12 @@ async function main() {
     startupError = `the dashboard could not start: ${err.message}`;
   });
   server.listen(PORT, () => console.log(`[web] dashboard on :${PORT}`));
+
+  if (peerPools.length) {
+    console.log(`[web] reading the other pools: ${peerPools.map((p) => `${p.name} (${p.host}:${p.port})`).join(', ')}`);
+    pollPeers().catch(() => {});
+    setInterval(() => pollPeers().catch(() => {}), PEER_POLL_MS).unref();
+  }
 
   // Armed BEFORE the start loop below, and not inside it. A missing payout
   // address returns early, and a node that never answers keeps the loop turning

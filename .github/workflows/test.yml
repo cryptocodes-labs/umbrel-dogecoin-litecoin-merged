@@ -49,6 +49,12 @@ jobs:
       - name: Litecoin entrypoint and config-generation suite
         run: bash ./test/ltc_entrypoint.sh
 
+      # The Soqucoin Node's config: wallet off, mining RPCs on, password only
+      # as an rpcauth HMAC, private RPC ranges, uid 1000 — then a real
+      # soqucoind (the pinned release) started on it.
+      - name: Soqucoin entrypoint and config-generation suite
+        run: bash ./test/soq_entrypoint.sh
+
       - name: Solo app .env loader suite
         run: bash ./test/solo_exports.sh
 
@@ -69,6 +75,16 @@ jobs:
 
       - name: Several aux chains under one parent (chain merkle tree)
         run: node test/multi_aux_unit.js
+
+      # Soqucoin as a third aux chain: its Bech32m addresses, the four-leaf
+      # chain tree, and that it only ever runs on the private merged port.
+      - name: Soqucoin unit checks
+        run: node test/soq_unit.js
+
+      # PEER_POOLS: the other pool containers' figures, read over the internal
+      # network and added up for the umbrelOS widgets; hostile answers refused.
+      - name: Other ports on the dashboard and widgets
+        run: node test/peers_http.js
 
       - name: Which workers mine Pepecoin, per the status snapshot
         run: node test/pep_snapshot_unit.js
@@ -162,6 +178,12 @@ jobs:
           dockerfile: images/pep-core/Dockerfile
           failure-threshold: error
 
+      - name: Lint the Soqucoin node Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: images/soq-core/Dockerfile
+          failure-threshold: error
+
       - name: Lint the dashboard Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -178,10 +200,13 @@ jobs:
             images/ltc-core/healthcheck.sh \
             images/pep-core/entrypoint.sh \
             images/pep-core/healthcheck.sh \
+            images/soq-core/entrypoint.sh \
+            images/soq-core/healthcheck.sh \
             doge-dogecoin-node/exports.sh \
             doge-dogecoin-solo/exports.sh \
             doge-litecoin-node/exports.sh \
             doge-pepecoin-node/exports.sh \
+            doge-soqucoin-node/exports.sh \
             scripts/*.sh \
             test/*.sh
 
@@ -218,6 +243,14 @@ jobs:
           push: false
           cache-from: type=gha,scope=pep-core
           cache-to: type=gha,mode=max,scope=pep-core
+      - name: Build soqucoind (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: images/soq-core
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=soq-core
+          cache-to: type=gha,mode=max,scope=soq-core
       - name: Build the stratum server (amd64 + arm64)
         uses: docker/build-push-action@v6
         with:

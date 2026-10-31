@@ -100,6 +100,33 @@ body.block-found .jackpot{display:block}
 .plot .you i{display:block;font:10px/1 var(--mono);color:var(--gold);margin-top:5px;font-style:normal;white-space:nowrap}
 .scale .foot{margin-top:14px;font-size:13px;color:var(--dim);max-width:64ch}
 
+/* ---------- one hash, several targets ----------
+   Merged mining in one picture: a single log axis of difficulty, every coin's
+   network difficulty a target on it, and the best share one gold line. The
+   gap between the line and a target is how far that coin's block was. */
+:root{--c-ltc:#b9c3cf; --c-doge:var(--gold); --c-pep:#86ad5c; --c-soq:#6f9fd0}
+.c-ltc{--c:var(--c-ltc)} .c-doge{--c:var(--c-doge)} .c-pep{--c:var(--c-pep)} .c-soq{--c:var(--c-soq)} .c-other{--c:var(--dim)}
+.targets{position:relative;height:96px;margin:2px 34px 20px}
+.targets .axis{position:absolute;left:0;right:0;top:50px;height:2px;background:var(--line)}
+.targets .dec{position:absolute;top:46px;width:1px;height:10px;background:var(--line)}
+.targets .dec i{position:absolute;top:14px;left:50%;transform:translateX(-50%);font:10px/1 var(--mono);color:var(--dimmer);font-style:normal;white-space:nowrap}
+.targets .goal{position:absolute;top:0;height:52px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center}
+.targets .goal i{font:600 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--c);font-style:normal;white-space:nowrap}
+.targets .goal span{flex:1;width:0;margin-top:5px;border-left:1px dashed var(--c);opacity:.75}
+.targets .goal.low{padding-top:17px}
+.targets .goal::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--c);margin-bottom:-4px}
+.targets .shot{position:absolute;top:26px;transform:translateX(-50%);text-align:center;transition:left .6s cubic-bezier(.2,.8,.2,1)}
+.targets .shot span{display:block;width:2px;height:36px;background:var(--gold-bright);margin:0 auto;box-shadow:0 0 10px rgba(232,200,74,.45)}
+.targets .shot i{display:block;font:10px/1 var(--mono);color:var(--gold-bright);margin-top:20px;font-style:normal;white-space:nowrap}
+.cdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--c);margin-right:9px;vertical-align:1px}
+.ccode{font:11px/1 var(--mono);color:var(--dimmer);margin-left:6px;letter-spacing:.06em}
+.pdot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:9px;vertical-align:1px;background:var(--dimmer)}
+.pdot.on{background:var(--live)} .pdot.off{background:var(--bad)}
+.tot td{border-top:1px solid var(--line);color:var(--gold);font-family:var(--mono);font-size:13px}
+#coins td,#peers td.num,#peers td.r{white-space:nowrap}
+.pdist{font:11.5px/1.5 var(--mono);color:var(--dimmer);margin-top:3px}
+@media (max-width:640px){ .ccode{display:none} .targets{margin-left:18px;margin-right:18px} }
+
 /* ---------- figure grid ---------- */
 .figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line-soft);
   border:1px solid var(--line-soft);margin-top:30px}
@@ -237,7 +264,7 @@ footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);
 <div class="wrap">
 
   <div class="mast">
-    <h1><span class="beacon" id="beacon"></span>Solo mining<span class="mmb" id="mmBadge" hidden>merged · DOGE + LTC</span></h1>
+    <h1><span class="beacon" id="beacon"></span>Solo mining<span class="mmb" id="mmBadge" hidden>merged</span></h1>
     <div class="meta" id="mastMeta">connecting</div>
   </div>
 
@@ -274,6 +301,27 @@ footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);
       <div class="you" id="rulerYou"><span></span><i id="rulerLabel"></i></div>
     </div></div>
     <p class="foot" id="scaleFoot"></p>
+  </section>
+
+  <!-- Merged mining: one hash is a candidate on every chain at once, each with
+       its own difficulty, so "how close" has one answer per coin. -->
+  <section class="scale" id="coinsBox" hidden>
+    <div class="head">
+      <span class="title">Distance per coin</span>
+      <span class="verdict" id="coinsNote"></span>
+    </div>
+    <div class="targets" id="targets" role="img" aria-label="Best share against each coin's network difficulty"></div>
+    <div id="coins"></div>
+  </section>
+
+  <!-- The other LTC + DOGE pool containers on this Umbrel (PEER_POOLS), read
+       from their own status API over umbrelOS's internal network. -->
+  <section class="scale" id="peersBox" hidden>
+    <div class="head">
+      <span class="title">All ports on this Umbrel</span>
+      <span class="verdict" id="peersNote"></span>
+    </div>
+    <div id="peers"></div>
   </section>
 
   <section class="figs">
@@ -1097,10 +1145,10 @@ let bannerBlockHash = null;
 // a Dogecoin block arrive through the same code, at wildly different heights
 // and rewards, and calling both "DOGE" turns a €2,000 event into a message the
 // user cannot act on — wrong wallet, wrong explorer, wrong node.
-// Pepecoin is a further aux chain beside Dogecoin; records without a chain are
-// Dogecoin's, as they always were.
-function chainOf(b){ return (b && (b.chain === 'LTC' || b.chain === 'PEP')) ? b.chain : 'DOGE'; }
-function coinName(b){ const c = chainOf(b); return c === 'LTC' ? 'Litecoin' : c === 'PEP' ? 'Pepecoin' : 'Dogecoin'; }
+// Pepecoin and Soqucoin are further aux chains beside Dogecoin; records without
+// a chain are Dogecoin's, as they always were.
+function chainOf(b){ return (b && (b.chain === 'LTC' || b.chain === 'PEP' || b.chain === 'SOQ')) ? b.chain : 'DOGE'; }
+function coinName(b){ const c = chainOf(b); return c === 'LTC' ? 'Litecoin' : c === 'PEP' ? 'Pepecoin' : c === 'SOQ' ? 'Soqucoin' : 'Dogecoin'; }
 
 function showBanner(b){
   const verdict = b.status === 'accepted'
@@ -1111,7 +1159,7 @@ function showBanner(b){
         ? 'Another block reached this height first, so it did not make the chain. Nothing was done wrong.'
         : 'Your node did not accept it' + (b.error ? ': ' + esc(b.error) : '.');
   $('jackpotText').innerHTML =
-    '<b>' + coinName(b) + '.</b> Height <span class="num">' + b.height + '</span>, worth <span class="num">' +
+    '<b>' + coinName(b) + '.</b> Height <span class="num">' + esc(b.height) + '</span>, worth <span class="num">' +
     (Number.isFinite(b.reward) ? (b.reward/1e8).toLocaleString('en-US',{maximumFractionDigits:2}) : '—') +
     ' ' + chainOf(b) + '</span>, found by ' +
     esc(b.worker) + ' and paid to <span class="num">' + esc(b.address) + '</span>. ' + verdict;
@@ -1212,6 +1260,158 @@ function renderCharts(){
   // that every five seconds on a phone is real bandwidth for a chart that moves
   // once a minute.
   if(openWorker) refreshWorkerPanel();
+}
+
+/* ---------- distance per coin, and the other ports ---------- */
+// The other pool containers on this Umbrel (PEER_POOLS), as /api/peers
+// returns them; null until the first answer or when the server has none.
+let lastPeers = null;
+
+// Each chain this pool's hashes can win, with its network difficulty in the
+// same consensus space as bestShareDiff. A status without `chains` (an older
+// pool) still carries Dogecoin's and Litecoin's under their older names.
+function chainsOf(s){
+  if(!s) return [];
+  if(Array.isArray(s.chains) && s.chains.length) return s.chains;
+  const out = [];
+  if(s.merged && s.merged.parentDifficulty) out.push({name:'LTC', label:'Litecoin', difficulty:s.merged.parentDifficulty});
+  if(s.networkDifficulty) out.push({name:'DOGE', label:'Dogecoin', difficulty:s.networkDifficulty});
+  return out;
+}
+// The best share that counts for one coin: the chain's own figure when the
+// pool keeps one (PEP, SOQ — only shares made while that coin was mined),
+// otherwise the pool's best (LTC and DOGE are in every merged job).
+function bestOn(s, name){
+  const c = chainsOf(s).find((k) => k.name === name);
+  if(!c) return 0;
+  return typeof c.best === 'number' ? c.best : (s.bestShareDiff || 0);
+}
+function share(best, difficulty){
+  if(!(difficulty > 0) || !(best > 0)) return '—';
+  const f = best/difficulty;
+  return f >= 1 ? 'BLOCK' : percent(f);
+}
+
+const COIN_CLASS = {LTC:'c-ltc', DOGE:'c-doge', PEP:'c-pep', SOQ:'c-soq'};
+const coinClass = (name) => COIN_CLASS[name] || 'c-other';
+// A decade on the difficulty axis: 100k, 1M, 10M — round, unlike compact().
+function decade(e){
+  for(const [p, sfx] of [[12,'T'],[9,'G'],[6,'M'],[3,'k']]) if(e >= p) return Math.pow(10, e - p) + sfx;
+  return String(Math.pow(10, e));
+}
+// Hashes for one block at a consensus-space difficulty (scrypt: 2^32 each).
+const blockSeconds = (difficulty, rate) => difficulty > 0 && rate > 0 ? difficulty * Math.pow(2, 32) / rate : 0;
+
+// The signature picture: one log axis, every coin's difficulty a target, the
+// best share one line. Positions are set through the style object rather
+// than in the markup, which the page's CSP would refuse.
+function drawTargets(el, chains, best){
+  const live = chains.filter((c) => c.difficulty > 0);
+  if(!live.length){ el.hidden = true; return; }
+  el.hidden = false;
+  const vals = live.map((c) => c.difficulty).concat(best > 0 ? [best] : []);
+  const lo = Math.floor(Math.log10(Math.min(...vals)));
+  const hi = Math.max(lo + 1, Math.ceil(Math.log10(Math.max(...vals))));
+  const x = (v) => (Math.log10(v) - lo) / (hi - lo) * 100;
+  let h = '<div class="axis"></div>';
+  for(let e = lo; e <= hi; e++) h += '<div class="dec" data-x="' + x(Math.pow(10, e)) + '"><i>' + decade(e) + '</i></div>';
+  // Easiest target first; neighbours alternate between two label rows, so two
+  // coins whose difficulties sit close together never print over each other.
+  live.slice().sort((a, b) => a.difficulty - b.difficulty).forEach((c, i) => {
+    h += '<div class="goal ' + coinClass(c.name) + (i % 2 ? ' low' : '') + '" data-x="' + x(c.difficulty) + '"><i>' +
+      esc(c.name) + '</i><span></span></div>';
+  });
+  if(best > 0) h += '<div class="shot" data-x="' + x(best) + '"><span></span><i>best ' + compact(best) + '</i></div>';
+  el.innerHTML = h;
+  el.querySelectorAll('[data-x]').forEach((n) => { n.style.left = Math.max(0, Math.min(100, Number(n.dataset.x))) + '%'; });
+}
+
+function renderCoins(d){
+  const chains = chainsOf(d);
+  const peers = (lastPeers && Array.isArray(lastPeers.peers)) ? lastPeers.peers : [];
+  const live = peers.filter((p) => p.ok && p.status);
+  const ownBest = d.bestShareDiff || 0;
+  // Per coin, across ports, only the ports that MINE that coin count: a share
+  // on a port without Soqucoin could never have been a Soqucoin block, and its
+  // hashrate does not bring one closer.
+  const mining = (name) => live.filter((p) => chainsOf(p.status).some((c) => c.name === name)).map((p) => p.status);
+  const allBestFor = (name) => Math.max(bestOn(d, name), ...mining(name).map((s) => bestOn(s, name)));
+  // The hashrate that can win this coin: a chain's own figure when the pool
+  // reports one (on a public port only the miners who gave a Pepecoin address
+  // mine Pepecoin), else everything connected.
+  const rateOn = (s, name) => {
+    const c = chainsOf(s).find((k) => k.name === name);
+    return c && typeof c.hashrate === 'number' ? c.hashrate : (s.totalHashrate || 0);
+  };
+  const allRateFor = (name) => rateOn(d, name) + mining(name).reduce((t, s) => t + rateOn(s, name), 0);
+
+  // One hash, several targets: the same best share is a different fraction of
+  // a block on every chain.
+  if(chains.length < 2 && !live.length){
+    $('coinsBox').hidden = true;
+  } else {
+    $('coinsBox').hidden = false;
+    drawTargets($('targets'), chains, ownBest);
+    let h = '<table><thead><tr><th>Coin</th><th class="r hide">Difficulty</th><th class="r">Best, this port</th>' +
+      (live.length ? '<th class="r">Best, all ports</th>' : '') +
+      '<th class="r">Expected wait</th></tr></thead><tbody>';
+    for(const c of chains){
+      const rate = live.length ? allRateFor(c.name) : rateOn(d, c.name);
+      h += '<tr class="' + coinClass(c.name) + '"><td><i class="cdot"></i>' + esc(c.label || c.name) +
+        '<span class="ccode">' + esc(c.name) + '</span></td>' +
+        '<td class="num r hide">' + compact(c.difficulty) + '</td>' +
+        '<td class="num r">' + share(bestOn(d, c.name), c.difficulty) + '</td>' +
+        (live.length ? '<td class="num r">' + share(allBestFor(c.name), c.difficulty) + '</td>' : '') +
+        '<td class="num r">' + (rate > 0 ? '~' + duration(blockSeconds(c.difficulty, rate)) : '—') + '</td></tr>';
+    }
+    const partial = chains.some((c) => typeof c.best === 'number');
+    $('coins').innerHTML = h + '</tbody></table><p class="foot">Expected wait is an average at the current hashrate of ' +
+      (live.length ? 'every port that mines that coin' : 'this port') + ', not a countdown.' +
+      (partial ? ' Pepecoin and Soqucoin count only the shares made while they were being mined, since the app last started.' : '') +
+      '</p>';
+    $('coinsNote').textContent = chains.length > 1 ? 'one hash, ' + chains.length + ' chances' : '';
+  }
+
+  if(!peers.length){ $('peersBox').hidden = true; return; }
+  $('peersBox').hidden = false;
+  const rows = [{name:'this app', ok:true, s:{
+    totalHashrate:d.totalHashrate || 0, workerCount:(d.workers || []).length,
+    bestShareDiff:ownBest, blocksFound:d.blocksFound || 0, chains,
+  }}].concat(peers.map((p) => ({name:p.name, ok:p.ok, s:p.status, error:p.error})));
+  let hrSum = 0, wSum = 0, bSum = 0;
+  // The distance per coin goes on a line of its own under the port: four
+  // coins side by side do not fit a column at phone width.
+  let t = '<table><thead><tr><th>Port</th><th class="r">Workers</th><th class="r">Hashrate</th>' +
+    '<th class="r hide">Best share</th><th class="r hide">Blocks</th></tr></thead><tbody>';
+  for(const r of rows){
+    if(!r.ok || !r.s){
+      t += '<tr><td><i class="pdot off"></i>' + esc(r.name) + '<div class="wwarn bad">not answering' +
+        (r.error ? ' — ' + esc(r.error) : '') + '</div></td><td class="num r">—</td><td class="num r">—</td>' +
+        '<td class="num r hide">—</td><td class="num r hide">—</td></tr>';
+      continue;
+    }
+    const hr = hashrate(r.s.totalHashrate);
+    hrSum += r.s.totalHashrate || 0; wSum += r.s.workerCount || 0; bSum += r.s.blocksFound || 0;
+    const dist = chainsOf(r.s).map((c) => esc(c.name) + ' ' + share(bestOn(r.s, c.name), c.difficulty)).join(' · ');
+    t += '<tr><td><i class="pdot' + (r.s.workerCount ? ' on' : '') + '"></i>' + esc(r.name) +
+      '<div class="pdist">' + (dist || 'no shares yet') + '</div></td>' +
+      '<td class="num r">' + count(r.s.workerCount) + '</td>' +
+      '<td class="num r">' + hr.n + ' ' + hr.u + '</td><td class="num r hide">' + compact(r.s.bestShareDiff) + '</td>' +
+      '<td class="num r hide">' + count(r.s.blocksFound) + '</td></tr>';
+  }
+  const sum = hashrate(hrSum);
+  t += '<tr class="tot"><td>all ports</td><td class="r">' + count(wSum) + '</td><td class="r">' + sum.n + ' ' + sum.u +
+    '</td><td class="r hide"></td><td class="r hide">' + count(bSum) + '</td></tr>';
+  $('peers').innerHTML = t + '</tbody></table>';
+  $('peersNote').textContent = 'read every 15 s from the other pool containers';
+}
+
+async function refreshPeers(){
+  try{
+    const res = await fetch('/api/peers', {cache:'no-store'});
+    lastPeers = res.ok ? await res.json() : null;
+  }catch(e){ lastPeers = null; }
+  if(lastStatus && lastStatus.ok) renderCoins(lastStatus);
 }
 
 /* ---------- main refresh ---------- */
@@ -1403,6 +1603,7 @@ async function tick(){
     : fraction >= 1
       ? 'A share met the full network difficulty, which means a block. The blocks table below says whether the node accepted it.'
       : 'Your closest share so far reached ' + percent(fraction) + ' of the difficulty a block requires. It is a near miss, not progress: every new share starts the lottery from scratch.';
+  renderCoins(d);
 
   // figures
   $('fWorkers').textContent = d.workers.length;
@@ -1436,8 +1637,10 @@ async function tick(){
   const ltcBlocks = d.blocks.filter((b) => chainOf(b) === 'LTC' && b.accepted === true).length;
   const dogeBlocks = d.blocks.filter((b) => chainOf(b) === 'DOGE' && b.accepted === true).length;
   const pepBlocks = d.blocks.filter((b) => chainOf(b) === 'PEP' && b.accepted === true).length;
+  const soqBlocks = d.blocks.filter((b) => chainOf(b) === 'SOQ' && b.accepted === true).length;
   $('fBlocksSub').textContent = !d.blocks.length ? 'none yet'
-    : (d.mergedMining ? dogeBlocks + ' DOGE · ' + ltcBlocks + ' LTC · ' + (d.pep || pepBlocks ? pepBlocks + ' PEP · ' : '') : '') +
+    : (d.mergedMining ? dogeBlocks + ' DOGE · ' + ltcBlocks + ' LTC · ' + (d.pep || pepBlocks ? pepBlocks + ' PEP · ' : '') +
+        (d.soq || soqBlocks ? soqBlocks + ' SOQ · ' : '') : '') +
       'last ' + since(d.blocks[0].at) + ' ago';
 
   const eta = (d.totalHashrate > 0 && netHash > 0) ? (60*netHash)/d.totalHashrate : 0;
@@ -1484,9 +1687,12 @@ async function tick(){
     // Three states, not two. "LTC only" was honest when the Dogecoin node was
     // the one missing, but it was still claiming a chain was being mined when
     // the LITECOIN node was gone and nothing was being hashed at all.
+    // Pepecoin and Soqucoin are named only while they are in the job: their
+    // nodes may be away, and then the pool mines without them.
+    const extra = chainsOf(d).map((c) => c.name).filter((n) => n === 'PEP' || n === 'SOQ');
     mmb.textContent = d.templateError ? 'merged · stalled'
       : d.auxError ? 'merged · LTC only'
-      : 'merged · DOGE + LTC';
+      : 'merged · ' + ['DOGE', 'LTC'].concat(extra).join(' + ');
     mmb.className = (d.templateError || d.auxError) ? 'mmb degraded' : 'mmb';
   }
   if(d.mergedMining && d.merged){
@@ -1643,7 +1849,7 @@ async function tick(){
       // hasOwnProperty, not a bare lookup: `status: "constructor"` would
       // otherwise render the source of Object into the page.
       const tag = Object.prototype.hasOwnProperty.call(TAGS, b.status) ? TAGS[b.status] : TAGS.submitting;
-      h += '<tr><td class="num">' + b.height + '</td>' +
+      h += '<tr><td class="num">' + esc(b.height) + '</td>' +
         (anyLtc ? '<td>' + chainOf(b) + '</td>' : '') +
         '<td>' + tag + (b.error ? '<div class="wsub">' + esc(b.error) + '</div>' : '') + '</td>' +
         '<td class="hide"><div class="wname">' + esc(b.worker) + '</div></td>' +
@@ -1854,6 +2060,8 @@ refreshPushUI();
 refreshProfileUI();
 setInterval(tick, 5000);
 setInterval(refreshHistory, 30000);
+refreshPeers();
+setInterval(refreshPeers, 15000);
 document.addEventListener('visibilitychange', () => { if(!document.hidden){ tick(); refreshHistory(); } });
 </script>
 </body>

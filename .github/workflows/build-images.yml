@@ -57,9 +57,12 @@ jobs:
           - name: umbrel-pepecoin-core
             context: images/pep-core
             tag: "1.1.0-1"
+          - name: umbrel-soqucoin-core
+            context: images/soq-core
+            tag: "2.6.1-1"
           - name: umbrel-dogecoin-stratum
             context: images/stratum
-            tag: "1.8.1"
+            tag: "1.9.0"
     steps:
       - uses: actions/checkout@v4
 

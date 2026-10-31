@@ -15,7 +15,7 @@ const { EventEmitter } = require('node:events');
 
 const { RpcClient } = require('./rpc');
 const { Job, validateShareAsync, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE } = require('./job');
-const { MergedJob, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID } = require('./merged');
+const { MergedJob, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID, SOQ_CHAIN_ID } = require('./merged');
 const pm = require('./public-merged');
 const u = require('./util');
 
@@ -131,6 +131,8 @@ class Pool extends EventEmitter {
     this.pep = null;
     if (this.merged && config.pep && config.pep.rpc && config.pep.payoutAddress) {
       this.pep = {
+        name: 'PEP',
+        label: 'Pepecoin',
         rpc: new RpcClient({ ...config.pep.rpc, timeout: 5000 }),
         submitRpc: new RpcClient({ ...config.pep.rpc, timeout: 180000 }),
         payoutAddress: config.pep.payoutAddress,
@@ -139,6 +141,42 @@ class Pool extends EventEmitter {
         error: null,
         polling: false,
       };
+    }
+
+    // Soqucoin: a third aux chain beside Dogecoin and Pepecoin, under the same
+    // Litecoin parent, optional in exactly the same way (its own timer, a
+    // five-second timeout, left out of the jobs while soqucoind is away).
+    //
+    // PRIVATE merged mode only. There soqucoind builds the whole Soqucoin block
+    // with createauxblock, including the PAT block attestation that a coinbase
+    // built from getblocktemplate would have to copy over by hand (soqucoin
+    // doc/pool-integration.md, "Block attestation (PAT)"). A public port that
+    // pays every miner at its own SOQ address needs that copy and is not built,
+    // so SOQ_* is ignored there — said at startup, never silently.
+    this.soq = null;
+    this.soqIgnored = null;
+    if (this.merged && config.soq && config.soq.rpc && config.soq.payoutAddress) {
+      if (this.publicMerged) {
+        this.soqIgnored = 'Soqucoin is merge-mined on the private port only; SOQ_* is ignored with PUBLIC_MERGED=1';
+      } else {
+        this.soq = {
+          name: 'SOQ',
+          label: 'Soqucoin',
+          // A hard deadline, not only a silence timeout: a node trickling
+          // bytes must not stall a poll (or the pool's start, which waits for
+          // the first one). And a host name that answers with more than one
+          // address on the shared docker network is refused (see rpc.js).
+          rpc: new RpcClient({ ...config.soq.rpc, timeout: 5000, deadline: 5000, singleAddress: true }),
+          submitRpc: new RpcClient({ ...config.soq.rpc, timeout: 180000, singleAddress: true }),
+          payoutAddress: config.soq.payoutAddress,
+          // Set once soqucoind has said which network it is on (see fetchSoqBlock).
+          networkChecked: false,
+          block: null,
+          unavailableSince: null,
+          error: null,
+          polling: false,
+        };
+      }
     }
 
     this.jobs = new Map();
@@ -174,9 +212,17 @@ class Pool extends EventEmitter {
       // whether the aux longpoll below is earning its keep.
       auxTipMissed: 0,
       auxTipMissedAt: null,
-      // The same for Pepecoin, which is polled only.
+      // The same for Pepecoin and Soqucoin, which are polled only.
       pepTipMissed: 0,
       pepTipMissedAt: null,
+      soqTipMissed: 0,
+      soqTipMissedAt: null,
+      // The best share per further aux chain (PEP, SOQ), counted only while
+      // that chain was in the job the share was for: a share from before
+      // Soqucoin was configured, or from while its node was down, could never
+      // have been a Soqucoin block. In memory, so it starts again at a restart;
+      // Litecoin and Dogecoin are in every merged job and use bestShareDiff.
+      chainBest: {},
     };
     // How often dogecoind's longpoll came back, and how often that was actually
     // a new tip rather than a mempool update. Both are surfaced: zero tip moves
@@ -250,6 +296,8 @@ class Pool extends EventEmitter {
     // otherwise the pool starts on Litecoin and Dogecoin and picks Pepecoin up
     // on a later poll. pollPep never throws.
     if (this.pep) await this.pollPep();
+    // Soqucoin likewise.
+    if (this.soq) await this.pollSoq();
     await this.refreshTemplate('startup');
     await this.reconcileBlocks();
 
@@ -378,6 +426,10 @@ class Pool extends EventEmitter {
       this.pepTimer = setInterval(() => this.pollPep(), this.config.pepPollMs || 2000);
       this.pepTimer.unref();
     }
+    if (this.soq) {
+      this.soqTimer = setInterval(() => this.pollSoq(), this.config.soqPollMs || 1000);
+      this.soqTimer.unref();
+    }
     this.longPollLoop();
     if (this.wantsAuxLongpoll()) this.auxLongPollLoop();
     this.log(`stratum listening on 0.0.0.0:${this.config.stratumPort}`);
@@ -426,6 +478,24 @@ class Pool extends EventEmitter {
         // instead of refusing to start the Litecoin and Dogecoin pool.
         this.log(`Pepecoin DISABLED: PEP_PAYOUT_ADDRESS is not a ${this.pepChain} address (${err.message})`);
         this.pep = null;
+      }
+    }
+
+    if (this.soqIgnored) this.log(this.soqIgnored);
+    if (this.soq) {
+      // Soqucoin follows Dogecoin's network too (regtest: sq1p…, the same
+      // prefix as mainnet). Checked here, not by soqucoind: its createauxblock
+      // would take a Base58 address and mine to an output nobody can spend.
+      this.soqChain = `soq-${this.chain}`;
+      try {
+        this.soqPayoutScript = u.addressToScript(this.soq.payoutAddress, this.soqChain);
+        this.log(
+          `merged mining: aux Soqucoin paying ${this.soq.payoutAddress} — optional: while soqucoind ` +
+            'is unreachable, jobs carry the other chains only'
+        );
+      } catch (err) {
+        this.log(`Soqucoin DISABLED: SOQ_PAYOUT_ADDRESS is not a ${this.soqChain} address (${err.message})`);
+        this.soq = null;
       }
     }
 
@@ -554,7 +624,13 @@ class Pool extends EventEmitter {
     }
     const now = pep.block ? pep.block.hash : null;
     if (now !== had && this.currentJob && !this.refreshInFlight) {
-      this.refreshTemplate(now ? 'pepecoin block' : 'pepecoin gone').catch(() => {});
+      // Under the same flag as the poll timer's refresh, so the two can never
+      // overlap and land out of order. A change seen while one is in flight is
+      // picked up by the next poll: the job remembers which block it carries.
+      this.refreshInFlight = true;
+      this.refreshTemplate(now ? 'pepecoin block' : 'pepecoin gone')
+        .catch(() => {})
+        .finally(() => { this.refreshInFlight = false; });
     }
   }
 
@@ -586,6 +662,7 @@ class Pool extends EventEmitter {
     if (!block || !/^[0-9a-f]{64}$/.test(String(block.hash))) {
       throw new Error('pepecoind createauxblock did not return an aux block hash');
     }
+    this.checkAuxAnswer(block, 'pepecoind');
     // The tree puts each chain at the slot its own id dictates; a daemon that
     // is not Pepecoin would be committed to at the wrong slot and every proof
     // refused. Treated like an outage: left out, said out loud.
@@ -593,6 +670,91 @@ class Pool extends EventEmitter {
       throw new Error(`the node at PEP_RPC_HOST reports chain id ${block.chainid}, not Pepecoin's ${PEP_CHAIN_ID}`);
     }
     return block;
+  }
+
+  // Soqucoin's aux block: pollPep's twin, private mode only (see the
+  // constructor), so always createauxblock. A changed hash rebuilds the job
+  // without clean_jobs; soqucoind going away drops Soqucoin from the next job.
+  async pollSoq() {
+    const soq = this.soq;
+    if (!soq || soq.polling) return;
+    soq.polling = true;
+    const had = soq.block ? soq.block.hash : null;
+    try {
+      const block = await this.fetchSoqBlock();
+      if (soq.unavailableSince) {
+        this.log(`the Soqucoin node is answering again after ${
+          Math.round((Date.now() - soq.unavailableSince) / 1000)
+        }s`);
+      }
+      soq.unavailableSince = null;
+      soq.error = null;
+      soq.block = block;
+    } catch (err) {
+      if (!soq.unavailableSince) {
+        soq.unavailableSince = Date.now();
+        this.log(`Soqucoin left out of new jobs: ${err.message}. The other chains are mined as before.`);
+      }
+      soq.error = err.message;
+      soq.block = null;
+      // A node that comes back may be a different one; ask again.
+      soq.networkChecked = false;
+    } finally {
+      soq.polling = false;
+    }
+    const now = soq.block ? soq.block.hash : null;
+    if (now !== had && this.currentJob && !this.refreshInFlight) {
+      // See pollPep: one refresh at a time.
+      this.refreshInFlight = true;
+      this.refreshTemplate(now ? 'soqucoin block' : 'soqucoin gone')
+        .catch(() => {})
+        .finally(() => { this.refreshInFlight = false; });
+    }
+  }
+
+  async fetchSoqBlock() {
+    // Once per spell of availability: is this soqucoind on the pool's network?
+    // Mainnet, testnet and regtest share the sq1 address prefix and the chain
+    // id, so nothing else would notice a mainnet pool mining testnet SOQ.
+    if (!this.soq.networkChecked) {
+      const info = await this.soq.rpc.call('getblockchaininfo');
+      if (!info || info.chain !== this.chain) {
+        throw new Error(`the node at SOQ_RPC_HOST is on ${info && info.chain}, this pool on ${this.chain}`);
+      }
+      this.soq.networkChecked = true;
+    }
+    const block = await this.soq.rpc.call('createauxblock', [this.soq.payoutAddress]);
+    if (!block || !/^[0-9a-f]{64}$/.test(String(block.hash))) {
+      throw new Error('soqucoind createauxblock did not return an aux block hash');
+    }
+    if (block.chainid !== SOQ_CHAIN_ID) {
+      throw new Error(`the node at SOQ_RPC_HOST reports chain id ${block.chainid}, not Soqucoin's ${SOQ_CHAIN_ID}`);
+    }
+    this.checkAuxAnswer(block, 'soqucoind');
+    return block;
+  }
+
+  // The rest of a createauxblock answer, checked before any of it is used. A
+  // node that is broken or not what it claims could otherwise hand back a
+  // target so easy that every share becomes a block candidate — a submission,
+  // a log line, a saved record and a push for each — or a height that ends up
+  // in the dashboard. Its target may be no easier than the chain's own
+  // minimum difficulty (powLimit ~uint256(0) >> 20 on mainnet and testnet,
+  // the same for Dogecoin, Pepecoin and Soqucoin; 0x7fff… on regtest).
+  checkAuxAnswer(block, daemon) {
+    if (!/^[0-9a-f]{8}$/.test(String(block.bits))) {
+      throw new Error(`${daemon} returned bits ${JSON.stringify(block.bits)}, not 8 hex digits`);
+    }
+    const limit = u.targetFromBits(this.chain === 'regtest' ? '207fffff' : '1e0fffff');
+    if (u.targetFromBits(block.bits) > limit) {
+      throw new Error(`${daemon} returned a target easier than the chain allows (bits ${block.bits})`);
+    }
+    if (!Number.isSafeInteger(block.height) || block.height <= 0) {
+      throw new Error(`${daemon} returned height ${JSON.stringify(block.height)}`);
+    }
+    if (!Number.isSafeInteger(block.coinbasevalue) || block.coinbasevalue < 0) {
+      throw new Error(`${daemon} returned coinbase value ${JSON.stringify(block.coinbasevalue)}`);
+    }
   }
 
   // Ask the node about every block we recorded but never resolved.
@@ -616,7 +778,13 @@ class Pool extends EventEmitter {
       // Litecoin hash gets an honest "not found", which would rewrite a good
       // block to "the node does not have this block" on every restart.
       const rpc =
-        b.chain === 'LTC' ? this.ltcRpc : b.chain === 'PEP' ? this.pep && this.pep.rpc : this.rpc;
+        b.chain === 'LTC'
+          ? this.ltcRpc
+          : b.chain === 'PEP'
+            ? this.pep && this.pep.rpc
+            : b.chain === 'SOQ'
+              ? this.soq && this.soq.rpc
+              : this.rpc;
       if (!rpc) continue;
       try {
         const block = await rpc.call('getblock', [b.hash]);
@@ -655,6 +823,7 @@ class Pool extends EventEmitter {
   stop() {
     clearInterval(this.pollTimer);
     clearInterval(this.pepTimer);
+    clearInterval(this.soqTimer);
     clearInterval(this.sampleTimer);
     clearInterval(this.saveTimer);
     clearInterval(this.pingTimer);
@@ -866,6 +1035,7 @@ class Pool extends EventEmitter {
     if (scope.best) {
       this.stats.bestShareDiff = 0;
       this.stats.bestShareAt = null;
+      this.stats.chainBest = {};
       for (const c of this.clients.values()) c.bestShareDiff = 0;
     }
     this.stats.resetAt = Date.now();
@@ -1101,14 +1271,19 @@ class Pool extends EventEmitter {
     const pepBlock = this.pep && this.pep.block ? this.pep.block : null;
     const pepHash = pepBlock ? pepBlock.hash : null;
     const pepChanged = !!this.currentJob && (this.currentJob.pepHash || null) !== pepHash;
+    // Soqucoin in the same way (private mode only; this.soq is null otherwise).
+    const soqBlock = this.soq && this.soq.block ? this.soq.block : null;
+    const soqHash = soqBlock ? soqBlock.hash : null;
+    const soqChanged = !!this.currentJob && (this.currentJob.soqHash || null) !== soqHash;
 
-    if (!isNewBlock && !pepChanged) {
+    if (!isNewBlock && !pepChanged && !soqChanged) {
       const ageMs = Date.now() - this.currentJob.createdAt;
       const gainedValue = template.coinbasevalue > this.currentJob.coinbaseValue;
       if (!gainedValue && ageMs < this.config.jobRebuildMs) return;
     }
 
     const extraAux = pepBlock ? [{ name: 'PEP', chainId: PEP_CHAIN_ID, block: pepBlock }] : [];
+    if (soqBlock) extraAux.push({ name: 'SOQ', chainId: SOQ_CHAIN_ID, block: soqBlock });
     const id = (++this.jobCounter).toString(16).padStart(8, '0');
     const job = this.publicMerged
       ? new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock, {
@@ -1117,6 +1292,7 @@ class Pool extends EventEmitter {
         })
       : new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock, { extraAux });
     job.pepHash = pepHash;
+    job.soqHash = soqHash;
     // Public mode: the Dogecoin template every miner's own aux block is built
     // from. Kept on the job so a variant is always built from the same
     // template as the job it belongs to. Pepecoin's likewise.
@@ -1142,6 +1318,7 @@ class Pool extends EventEmitter {
           `${job.auxDifficulty.toFixed(0)}), Litecoin height ${job.height} (difficulty ` +
           `${job.networkDifficulty.toFixed(0)})` +
           (pepBlock ? `, Pepecoin height ${pepBlock.height}` : '') +
+          (soqBlock ? `, Soqucoin height ${soqBlock.height}` : '') +
           ` (${reason})`
       );
     }
@@ -1987,6 +2164,10 @@ class Pool extends EventEmitter {
       this.stats.bestShareDiff = result.shareDiff;
       this.stats.bestShareAt = now;
     }
+    for (const a of effectiveJob.extraAux || []) {
+      const cur = this.stats.chainBest[a.name];
+      if (!cur || result.shareDiff > cur.diff) this.stats.chainBest[a.name] = { diff: result.shareDiff, at: now };
+    }
     if (this.store) {
       this.store.recordShare(now, result.shareDiff, creditedDifficulty, client.worker);
     }
@@ -2218,6 +2399,26 @@ class Pool extends EventEmitter {
       return;
     }
     const auxPowHex = job.auxPowHex(result.header, result.coinbase, a.chainId);
+
+    // Soqucoin: private mode only, so always the proof for the block soqucoind
+    // built itself with createauxblock.
+    if (a.name === 'SOQ') {
+      const soq = this.soq;
+      if (!soq) return; // switched off since this job was built
+      await this.submitCandidate({
+        chain: a.name,
+        height: a.height,
+        hash: a.hash,
+        hex: auxPowHex,
+        hexLabel: `AUXPOW HEX chain=${a.name} height=${a.height} auxhash=${a.hash}`,
+        reward: a.value,
+        address: soq.payoutAddress,
+        worker: client.worker,
+        submit: () => this.submitSoqAuxWithRetries(a.hash, auxPowHex, a.height),
+      });
+      return;
+    }
+
     const pep = this.pep;
     if (!pep) return; // switched off since this job was built
 
@@ -2271,6 +2472,30 @@ class Pool extends EventEmitter {
         }
         lastError = err;
         this.log(`Pepecoin submitauxblock attempt ${attempt + 1}/${delays.length} for height ${height} failed: ${err.message}`);
+      }
+    }
+    throw lastError;
+  }
+
+  // The same for soqucoind, whose aux RPCs are Dogecoin's: the same "block
+  // hash unknown" once the tip it was built on has moved.
+  async submitSoqAuxWithRetries(auxHash, auxPowHex, height) {
+    const delays = [0, 1000, 3000, 10000, 30000, 60000];
+    let lastError = null;
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (delays[attempt] > 0) await sleep(delays[attempt]);
+      try {
+        const ok = await this.soq.submitRpc.call('submitauxblock', [auxHash, auxPowHex]);
+        return ok === true ? null : 'soqucoind refused the auxpow proof';
+      } catch (err) {
+        if (/block hash unknown/i.test(String(err.message))) {
+          this.stats.soqTipMissed++;
+          this.stats.soqTipMissedAt = Date.now();
+          this.log(`the Soqucoin tip moved before the proof for height ${height} could be submitted`);
+          return 'the Soqucoin tip moved before the proof was submitted';
+        }
+        lastError = err;
+        this.log(`Soqucoin submitauxblock attempt ${attempt + 1}/${delays.length} for height ${height} failed: ${err.message}`);
       }
     }
     throw lastError;
@@ -2553,10 +2778,41 @@ class Pool extends EventEmitter {
           parentPayoutAddress: this.config.ltcPayoutAddress,
         }
       : null;
+    // Every chain one hash can win on, with its own network difficulty in the
+    // same consensus space as bestShareDiff — so best / difficulty is how close
+    // the best share came to a block on THAT chain. One hash, several targets:
+    // the same share is a far bigger fraction of a Pepecoin block than of a
+    // Litecoin one, and the dashboard shows each.
+    // The hashrate that can actually win each chain. On the public port a
+    // miner mines Pepecoin only when its username carries a Pepecoin address,
+    // so Pepecoin's share of the hashrate is those miners' alone; everywhere
+    // else every connected miner mines every chain in the job.
+    const allHashrate = workers.reduce((t, w) => t + w.hashrate, 0);
+    const pepHashrate = this.publicMerged
+      ? workers.filter((w) => w.pepPayoutAddress).reduce((t, w) => t + w.hashrate, 0)
+      : allHashrate;
+    const chains = !job
+      ? []
+      : this.merged
+        ? [
+            { name: 'LTC', label: 'Litecoin', height: job.height, difficulty: job.networkDifficulty, hashrate: allHashrate },
+            { name: 'DOGE', label: 'Dogecoin', height: job.auxHeight, difficulty: job.auxDifficulty, hashrate: allHashrate },
+            ...(job.extraAux || []).map((a) => ({
+              name: a.name,
+              label: a.name === 'PEP' ? 'Pepecoin' : a.name === 'SOQ' ? 'Soqucoin' : a.name,
+              height: a.height,
+              difficulty: a.difficulty,
+              hashrate: a.name === 'PEP' ? pepHashrate : allHashrate,
+              // Only the shares made while this chain was being mined.
+              best: this.stats.chainBest[a.name] ? this.stats.chainBest[a.name].diff : 0,
+            })),
+          ]
+        : [{ name: 'DOGE', label: 'Dogecoin', height: job.height, difficulty: job.networkDifficulty, hashrate: allHashrate }];
     return {
       chain: this.chain,
       mergedMining: !!this.merged,
       merged,
+      chains,
       stratumPort: this.config.stratumPort,
       // Null only when no second port was ever configured. Stays the actual
       // port number even if binding it failed (see the catch in start()) —
@@ -2615,6 +2871,18 @@ class Pool extends EventEmitter {
             tipMissedAt: this.stats.pepTipMissedAt || null,
           }
         : null,
+      // Soqucoin likewise, private mode only.
+      soq: this.soq
+        ? {
+            height: this.soq.block ? this.soq.block.height : null,
+            hash: this.soq.block ? this.soq.block.hash : null,
+            unavailableSince: this.soq.unavailableSince || null,
+            error: this.soq.error || null,
+            tipMissed: this.stats.soqTipMissed || 0,
+            tipMissedAt: this.stats.soqTipMissedAt || null,
+          }
+        : null,
+      soqIgnored: this.soqIgnored || null,
       accepted: this.stats.accepted,
       rejected: this.stats.rejected,
       rejectReasons: this.stats.rejectReasons,

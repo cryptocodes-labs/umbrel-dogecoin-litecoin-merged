@@ -29,6 +29,10 @@ const { splitReward } = require('./public-merged');
 const DOGE_CHAIN_ID = 98;
 // Pepecoin's, from src/chainparams.cpp (1.1.0): 0x3f on every network.
 const PEP_CHAIN_ID = 63;
+// Soqucoin's, 0x5351, checked strictly on mainnet, testnet and regtest
+// (soqucoin doc/pool-integration.md). With Dogecoin and Pepecoin beside it the
+// chain merkle tree has four leaves at nonce 0: DOGE slot 0, PEP 1, SOQ 3.
+const SOQ_CHAIN_ID = 21329;
 
 // litecoind refuses getblocktemplate unless the caller declares it understands
 // the deployed rules. Without mweb it answers "getblocktemplate must be called
@@ -285,4 +289,4 @@ function withWitness(tx) {
   ]);
 }
 
-module.exports = { MergedJob, withWitness, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID };
+module.exports = { MergedJob, withWitness, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID, SOQ_CHAIN_ID };

@@ -75,6 +75,38 @@ check "a password containing = and / survives intact" \
   "$(run_with_env 'LTC_RPC_PASSWORD=a=b/c+d==
 ' LTC_RPC_PASSWORD)"
 
+check "the Soqucoin settings come through" \
+  "doge-soqucoin-node_soqucoind_1|33389|umbrel|p=w/d+|sq1pu43lfdnte6tmfwzhvy8y8j8ga0xghd9j9hhaazczrl2ellfynqtsv270c8" \
+  "$(run_with_env 'SOQ_RPC_HOST=doge-soqucoin-node_soqucoind_1
+' SOQ_RPC_HOST)|$(run_with_env 'SOQ_RPC_PORT=33389
+' SOQ_RPC_PORT)|$(run_with_env 'SOQ_RPC_USER=umbrel
+' SOQ_RPC_USER)|$(run_with_env 'SOQ_RPC_PASSWORD=p=w/d+
+' SOQ_RPC_PASSWORD)|$(run_with_env 'SOQ_PAYOUT_ADDRESS=sq1pu43lfdnte6tmfwzhvy8y8j8ga0xghd9j9hhaazczrl2ellfynqtsv270c8
+' SOQ_PAYOUT_ADDRESS)"
+
+check "PEER_POOLS comes through with its own = signs intact" \
+  "3335=doge-public:3000,3339=doge-public-rental:3000" \
+  "$(run_with_env 'PEER_POOLS=3335=doge-public:3000,3339=doge-public-rental:3000
+' PEER_POOLS)"
+
+# The class of bug, not just the instance: every app setting the compose file
+# reads must be one this file lets through, or setting it in .env does nothing
+# at all — no error, no log line. umbrelOS's own variables (APP_*) come from
+# elsewhere. RENTED_STRATUM_PORT is read by the compose file but has never been
+# on the list; it is left as it is here and reported separately.
+missing_keys=""
+COMPOSE="$(dirname "${EXPORTS}")/docker-compose.yml"
+compose_keys="$(grep -oE '\$\{[A-Z_]+' "${COMPOSE}" | sed 's/.*{//' | sort -u)"
+# Guard against a vacuous pass: a wrong path would find no keys at all.
+[[ "$(wc -w <<< "${compose_keys}")" -ge 20 ]] && ok "the compose file's settings were found" \
+  || bad "the compose file's settings were found" "only: ${compose_keys}"
+for key in ${compose_keys}; do
+  case "${key}" in APP_*|RENTED_STRATUM_PORT) continue ;; esac
+  [[ "$(run_with_env "${key}=x
+" "${key}")" == "x" ]] || missing_keys="${missing_keys} ${key}"
+done
+check "every setting the compose file reads can be set in .env" "" "${missing_keys# }"
+
 echo
 echo "formatting people actually produce"
 check "comments are ignored" "<unset>" \
