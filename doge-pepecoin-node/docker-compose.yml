@@ -20,7 +20,7 @@ services:
   # Pepecoin Core full node
   # ---------------------------------------------------------------------
   pepecoind:
-    image: ghcr.io/cryptocodes-labs/umbrel-pepecoin-core:1.1.0-2
+    image: ghcr.io/cryptocodes-labs/umbrel-pepecoin-core:1.1.0-2@sha256:0009989ce07bd1173a63d9cb214b2b19b2afbb761614f5ce4d0e69d8909239b1
     restart: on-failure
     stop_grace_period: 5m
     # A node needs a few dozen threads; this caps what a compromised one can
@@ -110,7 +110,7 @@ services:
   # Dashboard + Umbrel widgets
   # ---------------------------------------------------------------------
   app:
-    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-ui:1.1.1
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-ui:1.1.1@sha256:d8b65bbcc2fd9bb77d346620b315b9cbd8561f6c11e0954a7a523dd95cd795dc
     restart: on-failure
     logging: *default-logging
     depends_on:

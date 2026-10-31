@@ -6,21 +6,25 @@
 #   stratum  : host 22559  (VPS forwards public 3335 here)
 #   dashboard: host 22561  (LAN only, do not forward)
 #
-# Run on the Umbrel after copying images/stratum to ~/doge-public-src:
+# Run on the Umbrel:
 #   bash ~/deploy-public-umbrel.sh
+#
+# The image is the one CI tested and published, pinned by digest — the same
+# image the DOGE+LTC+PEP+SOQ app runs — not a local build: what runs on the
+# public port is then exactly what was reviewed. To move an existing public
+# or rented container to a new version without touching its settings, use
+# scripts/upgrade-public-pools.sh instead.
 #
 set -euo pipefail
 
-SRC=~/doge-public-src
-IMG=cryptocode/doge-public:1.8.1
+IMG=ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.9.1@sha256:eb5d433d982b7199f0dcfee903ed2fa18cf87aa94dc010bf2bdf88048540830c
 APP=doge-dogecoin-solo_app_1
 DIR=~/doge-public
 
-[ -f "$SRC/Dockerfile" ] || { echo "Missing $SRC/Dockerfile — copy images/stratum there first"; exit 1; }
 sudo docker inspect "$APP" >/dev/null || { echo "The DOGE app ($APP) is not running"; exit 1; }
 
-echo "== building $IMG"
-sudo docker build -q -t "$IMG" "$SRC"
+echo "== pulling $IMG"
+sudo docker pull -q "$IMG"
 
 mkdir -p "$DIR/data"
 # Node connection details and the fee addresses come from the running app, so

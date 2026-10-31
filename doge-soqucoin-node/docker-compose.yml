@@ -20,7 +20,7 @@ services:
   # Soqucoin Core full node
   # ---------------------------------------------------------------------
   soqucoind:
-    image: ghcr.io/cryptocodes-labs/umbrel-soqucoin-core:2.6.1-1
+    image: ghcr.io/cryptocodes-labs/umbrel-soqucoin-core:2.6.1-1@sha256:21d7016f2b1721fa6795a695057665e3ffee8a6a6b5721fba335e6f99a67ea50
     restart: on-failure
     stop_grace_period: 5m
     # A hard ceiling, so this node never shows up big in umbrelOS's memory
@@ -112,7 +112,7 @@ services:
   # Dashboard + Umbrel widgets
   # ---------------------------------------------------------------------
   app:
-    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-ui:1.1.1
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-ui:1.1.1@sha256:d8b65bbcc2fd9bb77d346620b315b9cbd8561f6c11e0954a7a523dd95cd795dc
     restart: on-failure
     logging: *default-logging
     depends_on:

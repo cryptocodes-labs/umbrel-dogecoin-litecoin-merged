@@ -12,6 +12,14 @@ import sys
 
 import yaml
 
+# image name -> tag, as .github/workflows/build-images.yml publishes them.
+with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       ".github", "workflows", "build-images.yml"), encoding="utf-8") as _fh:
+    PUBLISHED_TAGS = {
+        str(e["name"]): str(e["tag"])
+        for e in yaml.safe_load(_fh)["jobs"]["build"]["strategy"]["matrix"]["include"]
+    }
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # --strict turns "you have not configured this yet" into a hard failure. CI uses
 # it so an unconfigured store can never be published; local runs only warn.
@@ -181,6 +189,18 @@ for app_dir in app_dirs:
             err(f"{app_dir}: service {name!r} image {image!r} is not pinned to a tag")
         elif str(image).endswith(":latest"):
             warn(f"{app_dir}: service {name!r} uses the ':latest' tag")
+        # Our own images: a digest that is well formed, and a tag that is the
+        # one the publish workflow builds — a compose file pointing at a tag
+        # the workflow no longer publishes would install something nobody
+        # built from this repository. test/image_pins.sh checks the digest
+        # against the registry itself.
+        m = re.match(r"ghcr\.io/[^/]+/([a-z0-9-]+):([0-9A-Za-z.-]+)(?:@(.+))?$", str(image))
+        if m:
+            img, tag, digest = m.group(1), m.group(2), m.group(3)
+            if digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                err(f"{app_dir}: service {name!r} pins {digest!r}, which is not a sha256 digest")
+            if img in PUBLISHED_TAGS and PUBLISHED_TAGS[img] != tag:
+                err(f"{app_dir}: service {name!r} uses {img}:{tag}, but the publish workflow builds {img}:{PUBLISHED_TAGS[img]}")
         if str(image).startswith(("127.0.0.1:", "localhost:")):
             placeholder(
                 f"{app_dir}: service {name!r} pulls from a local registry ({image}) — "
