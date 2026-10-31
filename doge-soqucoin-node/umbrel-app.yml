@@ -2,7 +2,7 @@ manifestVersion: 1
 id: doge-soqucoin-node
 category: bitcoin
 name: Soqucoin Node
-version: "2.6.1-1"
+version: "2.6.1-2"
 tagline: Run your own Soqucoin node, powered by Soqucoin Core
 description: >-
   Run a Soqucoin node on your Umbrel, powered by the official Soqucoin Core release binaries.

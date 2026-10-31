@@ -439,7 +439,16 @@ async function credentialsPeerAllowed(req) {
     for (const host of CREDENTIALS_ALLOW_HOSTS) {
       try {
         const records = await dns.lookup(host, { all: true });
-        found.push(...records.map((r) => normaliseIp(r.address)));
+        const addrs = [...new Set(records.map((r) => normaliseIp(r.address)))];
+        // Every umbrelOS app shares one docker network, and any container on
+        // it can claim a name or alias. A name that answers with more than one
+        // address therefore has an impostor behind it — and the RPC password
+        // must not go to either. That name is not trusted at all.
+        if (addrs.length !== 1) {
+          console.warn(`Not trusting ${host} for /api/credentials: it answers with ${addrs.length} addresses (${addrs.join(', ')})`);
+          continue;
+        }
+        found.push(addrs[0]);
       } catch {
         /* try the next candidate */
       }

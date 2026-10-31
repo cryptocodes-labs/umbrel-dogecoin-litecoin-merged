@@ -20,9 +20,18 @@ services:
   # Dogecoin Core full node
   # ---------------------------------------------------------------------
   dogecoind:
-    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-core:1.14.9-1
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-core:1.14.9-2
     restart: on-failure
     stop_grace_period: 5m
+    # A node needs a few dozen threads; this caps what a compromised one can
+    # fork, so it cannot exhaust the Umbrel's process table.
+    pids_limit: 256
+    # Nothing outside /data is ever written: the entrypoint generates the
+    # config there and the daemon keeps its chain there. A read-only image
+    # means a compromised daemon cannot alter its own programs or scripts.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     logging: *default-logging
     volumes:
       - ${APP_DATA_DIR}/data:/data
@@ -77,7 +86,9 @@ services:
       ONLYNET: ""              # e.g. onion, ipv4
       EXTRA_ARGS: ""           # Any extra dogecoind flags.
     healthcheck:
-      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      # As the dogecoin user, not root: the check reads files in a directory
+      # that user can write to.
+      test: ["CMD", "gosu", "dogecoin", "/usr/local/bin/healthcheck.sh"]
       interval: 30s
       timeout: 15s
       retries: 5
@@ -99,7 +110,7 @@ services:
   # Dashboard + Umbrel widgets
   # ---------------------------------------------------------------------
   app:
-    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-ui:1.0.0
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-ui:1.1.1
     restart: on-failure
     logging: *default-logging
     depends_on:

@@ -302,6 +302,16 @@ async function hostileNodeChecks() {
   const lit = await new Promise((r) => singleAddressLookup('127.0.0.1', {}, (err, addr) => r(err || addr)));
   check('an IP address needs no lookup', lit === '127.0.0.1', String(lit));
   check('an ordinary RpcClient keeps the old behaviour', new RpcClient({ host: 'h', port: 1 }).singleAddress === false);
+  const strict = new Pool({
+    rpc: { host: 'h', port: 1 }, ltcRpc: { host: 'h', port: 1 }, mergedMining: true,
+    payoutAddress: DOGE_ADDR, ltcPayoutAddress: LTC_ADDR, stratumPort: 0,
+    pep: { rpc: { host: 'h', port: 1 }, payoutAddress: 'x' },
+    soq: { rpc: { host: 'h', port: 1 }, payoutAddress: 'x' },
+  });
+  const clients = [strict.rpc, strict.longpollRpc, strict.submitRpc, strict.ltcRpc, strict.ltcLongpollRpc,
+    strict.ltcSubmitRpc, strict.pep.rpc, strict.pep.submitRpc, strict.soq.rpc, strict.soq.submitRpc];
+  check('every node connection of the pool refuses a name with two addresses (all ten clients)',
+    clients.every((c) => c.singleAddress === true), clients.map((c) => c.singleAddress).join());
 }
 
 console.log('\nthe push notification names the coin');

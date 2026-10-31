@@ -2,7 +2,7 @@ manifestVersion: 1
 id: doge-litecoin-node
 category: bitcoin
 name: Litecoin Node
-version: "0.21.5.8-1"
+version: "0.21.5.8-2"
 tagline: Run your own Litecoin full node, powered by Litecoin Core
 description: >-
   Run a full Litecoin node on your Umbrel, powered by the official Litecoin Core release binaries.
@@ -51,12 +51,11 @@ deterministicPassword: false
 torOnly: false
 installSize: 15000000000
 releaseNotes: >-
-  Updates Litecoin Core from 0.21.4 to 0.21.5.8, the current official release. This is a required
-  upgrade for anyone who mines: 0.21.5.6 and 0.21.5.7 added two MWEB consensus rules, active on
-  mainnet since heights 3,154,440 and 3,172,640, and a node without them can hand out templates for
-  blocks the rest of the network rejects. The 0.21.5.x series also hardens MWEB validation, fixes
-  getblocktemplate fee and sigop accounting for MWEB transactions, and raises the P2P message limit so
-  large MWEB blocks still relay. The release notes call for no reindex; the existing chain data is reused.
+  Security hardening, no change to the node itself (Litecoin Core 0.21.5.8). The container runs with a
+  read-only image, a process limit and its healthcheck as the litecoin user; the startup script no
+  longer follows symlinks in the data folder, refuses newlines in the settings that become config
+  lines, and keeps the RPC password out of the daemon's environment. The dashboard no longer shows the
+  RPC password to a host name that answers with more than one address.
 widgets:
   - id: "sync"
     type: "text-with-progress"

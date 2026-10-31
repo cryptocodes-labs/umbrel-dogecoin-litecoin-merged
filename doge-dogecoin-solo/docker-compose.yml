@@ -14,7 +14,7 @@ services:
       PROXY_AUTH_ADD: "true"
 
   app:
-    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.9.0
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.9.1
     restart: on-failure
     logging: *default-logging
     # Docker's default is 10 seconds, and the shutdown handler waits up to 130

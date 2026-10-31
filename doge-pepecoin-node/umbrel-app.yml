@@ -2,7 +2,7 @@ manifestVersion: 1
 id: doge-pepecoin-node
 category: bitcoin
 name: Pepecoin Node
-version: "1.1.0-1"
+version: "1.1.0-2"
 tagline: Run your own Pepecoin full node, powered by Pepecoin Core
 description: >-
   Run a full Pepecoin node on your Umbrel, powered by the official Pepecoin Core release binaries.
@@ -46,10 +46,11 @@ deterministicPassword: false
 torOnly: false
 installSize: 10000000000
 releaseNotes: >-
-  First release. Pepecoin Core 1.1.0 from the official signed binaries, pruned to 4 GB by default
-  because this node exists to validate the chain and hand out block templates, not to serve historic
-  blocks. RPC threads and work queue are raised above the defaults of 4 and 16, which a single mining
-  longpoll is enough to exhaust.
+  Security hardening, no change to the node itself (Pepecoin Core 1.1.0). The container runs with a
+  read-only image, a process limit and its healthcheck as the pepecoin user; the startup script no
+  longer follows symlinks in the data folder, refuses newlines in the settings that become config
+  lines, and keeps the RPC password out of the daemon's environment. The dashboard no longer shows the
+  RPC password to a host name that answers with more than one address.
 widgets:
   - id: "sync"
     type: "text-with-progress"
