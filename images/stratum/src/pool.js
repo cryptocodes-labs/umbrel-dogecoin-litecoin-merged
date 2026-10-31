@@ -2714,10 +2714,30 @@ class Pool extends EventEmitter {
           parentPayoutAddress: this.config.ltcPayoutAddress,
         }
       : null;
+    // Every chain one hash can win on, with its own network difficulty in the
+    // same consensus space as bestShareDiff — so best / difficulty is how close
+    // the best share came to a block on THAT chain. One hash, several targets:
+    // the same share is a far bigger fraction of a Pepecoin block than of a
+    // Litecoin one, and the dashboard shows each.
+    const chains = !job
+      ? []
+      : this.merged
+        ? [
+            { name: 'LTC', label: 'Litecoin', height: job.height, difficulty: job.networkDifficulty },
+            { name: 'DOGE', label: 'Dogecoin', height: job.auxHeight, difficulty: job.auxDifficulty },
+            ...(job.extraAux || []).map((a) => ({
+              name: a.name,
+              label: a.name === 'PEP' ? 'Pepecoin' : a.name === 'SOQ' ? 'Soqucoin' : a.name,
+              height: a.height,
+              difficulty: a.difficulty,
+            })),
+          ]
+        : [{ name: 'DOGE', label: 'Dogecoin', height: job.height, difficulty: job.networkDifficulty }];
     return {
       chain: this.chain,
       mergedMining: !!this.merged,
       merged,
+      chains,
       stratumPort: this.config.stratumPort,
       // Null only when no second port was ever configured. Stays the actual
       // port number even if binding it failed (see the catch in start()) —

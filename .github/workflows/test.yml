@@ -75,6 +75,11 @@ jobs:
       - name: Soqucoin unit checks
         run: node test/soq_unit.js
 
+      # PEER_POOLS: the other pool containers' figures, read over the internal
+      # network and added up for the umbrelOS widgets; hostile answers refused.
+      - name: Other ports on the dashboard and widgets
+        run: node test/peers_http.js
+
       - name: Which workers mine Pepecoin, per the status snapshot
         run: node test/pep_snapshot_unit.js
 

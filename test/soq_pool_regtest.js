@@ -260,6 +260,9 @@ const counts = () => Promise.all([
     const pepRec = pool.snapshot().blocks.find((b) => b.chain === 'PEP');
     check('and the PEP record beside it', pepRec && pepRec.accepted === true, JSON.stringify(pepRec));
     check('the status reports the Soqucoin height', pool.snapshot().soq && pool.snapshot().soq.height >= s0, JSON.stringify(pool.snapshot().soq));
+    const chains = pool.snapshot().chains || [];
+    check('the status lists all four coins with their own difficulty, for the distance per coin',
+      chains.map((c) => c.name).join() === 'LTC,DOGE,PEP,SOQ' && chains.every((c) => c.difficulty > 0), JSON.stringify(chains));
     m.socket.destroy();
     pool.stop();
   }

@@ -11,7 +11,7 @@ description: >-
   Soqucoin is a Scrypt chain built on Dogecoin Core, with ML-DSA-44 (Dilithium) signatures, and it is
   merge-mined under Litecoin beside Dogecoin. A merged-mining pool needs a Soqucoin node to hand out the
   Soqucoin block it commits to: this app is that node, on your own machine, with its mining RPCs on
-  (enablemining=1) for the DOGE + LTC Solo app.
+  (enablemining=1) for the DOGE + LTC + PEP + SOQ Solo app.
 
 
   The wallet is disabled: Soqucoin's own pool guide asks for exactly that, and a node without a wallet has

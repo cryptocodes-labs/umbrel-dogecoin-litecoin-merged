@@ -4,9 +4,9 @@ category: bitcoin
 # Short enough not to be truncated on the umbrelOS home screen. "Dogecoin +
 # Litecoin Solo Mining" was shown as "Dogecoin + Litecoi…", which loses the one
 # word that says what the app is for.
-name: DOGE + LTC Solo
+name: DOGE + LTC + PEP + SOQ Solo
 version: "1.9.0"
-tagline: Solo mine Dogecoin, or merge-mine Dogecoin and Litecoin, on your own nodes
+tagline: Solo mine Dogecoin, or merge-mine it with Litecoin, Pepecoin and Soqucoin, on your own nodes
 description: >-
   A stratum server that turns your Dogecoin node into a solo mining pool of one.
 
@@ -60,7 +60,9 @@ releaseNotes: >-
   Soqucoin (SOQ) can be merge-mined as a third aux chain beside Dogecoin and Pepecoin, on the private
   merged port only: set SOQ_RPC_HOST and SOQ_PAYOUT_ADDRESS (an sq1p… address) in .env and install the
   Soqucoin Node app. soqucoind builds each Soqucoin block itself with createauxblock. Without those two
-  settings, or while the Soqucoin node is away, mining is exactly what it was.
+  settings, or while the Soqucoin node is away, mining is exactly what it was. The dashboard and widgets
+  now give the distance to a block per coin (LTC, DOGE, PEP, SOQ), and with PEER_POOLS set they also
+  read the public and rented LTC + DOGE ports on this Umbrel, so every port shows up here.
 
 
   Optional Pepecoin merge mining, beside Dogecoin, under the same Litecoin work. Set PEP_RPC_HOST
