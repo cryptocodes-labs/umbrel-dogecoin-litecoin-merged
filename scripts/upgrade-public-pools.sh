@@ -19,7 +19,9 @@ sudo docker pull -q "$NEW" || { echo "pull failed; nothing changed"; exit 1; }
 upgrade() {
   local c="$1" dir="$2" sport="$3" wport="$4"
   echo; echo "== $c"
-  sudo docker inspect "$c" > "$dir/inspect-before-upgrade-$STAMP.json" || { echo "container $c not found"; return 1; }
+  # The saved settings hold the RPC passwords: readable by their owner only.
+  sudo docker inspect "$c" | (umask 077; cat > "$dir/inspect-before-upgrade-$STAMP.json") \
+    || { echo "container $c not found"; return 1; }
   local old net
   old=$(sudo docker inspect "$c" --format "{{.Config.Image}}")
   net=$(sudo docker inspect "$c" --format "{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}" | awk "{print \$1}")
