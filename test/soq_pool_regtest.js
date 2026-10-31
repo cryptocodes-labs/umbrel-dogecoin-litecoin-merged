@@ -264,6 +264,9 @@ const counts = () => Promise.all([
     check('the status lists all four coins with their own difficulty, for the distance per coin',
       chains.map((c) => c.name).join() === 'LTC,DOGE,PEP,SOQ' && chains.every((c) => c.difficulty > 0), JSON.stringify(chains));
     const soqChain = chains.find((c) => c.name === 'SOQ');
+    check('every coin reports its block reward and target block time, for the dashboard',
+      chains.every((c) => c.reward > 0 && c.blockSeconds > 0) && soqChain && soqChain.blockSeconds === 60 &&
+      chains.find((c) => c.name === 'LTC').blockSeconds === 150, JSON.stringify(chains));
     check('and Soqucoin\'s own best share counts the share made while it was mined',
       soqChain && soqChain.best > 0, JSON.stringify(soqChain));
     m.socket.destroy();

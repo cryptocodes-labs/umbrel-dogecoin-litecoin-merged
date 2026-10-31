@@ -47,7 +47,7 @@ const NEW_PEER = {
     { name: 'DOGE', label: 'Dogecoin', height: 6438477, difficulty: 49920142 },
     { name: 'PEP', label: 'Pepecoin', height: 1273944, difficulty: 33767025 },
     // Soqucoin with its own best: only the shares made while it was mined.
-    { name: 'SOQ', label: '<img src=x onerror=alert(1)>', height: 28722, difficulty: 1785563, best: 100000 },
+    { name: 'SOQ', label: '<img src=x onerror=alert(1)>', height: 28722, difficulty: 1785563, best: 100000, reward: 10000000000000, blockSeconds: 60 },
   ],
 };
 // A 1.8.1 peer: no `chains`, Dogecoin's difficulty at the top level and
@@ -147,6 +147,8 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   const [p1, p2, p3] = peers;
   check('the 1.9.0 peer is read with all four coins',
     p1.ok && p1.status.chains.map((c) => c.name).join() === 'LTC,DOGE,PEP,SOQ', JSON.stringify(p1));
+  check('a peer\'s block reward and block time come through for the dashboard',
+    p1.status.chains[3].reward === 10000000000000 && p1.status.chains[3].blockSeconds === 60, JSON.stringify(p1.status.chains[3]));
   check('the 1.8.1 peer gets LTC and DOGE from its older fields',
     p2.ok && p2.status.chains.map((c) => `${c.name}:${c.difficulty}`).join() === 'LTC:100000000,DOGE:50000000', JSON.stringify(p2));
   check('the dead one is shown as not answering', p3.ok === false && !!p3.error, JSON.stringify(p3));

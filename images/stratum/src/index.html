@@ -125,6 +125,10 @@ body.block-found .jackpot{display:block}
 .tot td{border-top:1px solid var(--line);color:var(--gold);font-family:var(--mono);font-size:13px}
 #coins td,#peers td.num,#peers td.r{white-space:nowrap}
 .pdist{font:11.5px/1.5 var(--mono);color:var(--dimmer);margin-top:3px}
+.csub{font:11.5px/1.5 var(--mono);color:var(--dimmer);margin-top:3px;white-space:normal}
+.trend{display:block;font:11px/1.4 var(--mono);margin-top:2px}
+.trend.up{color:var(--warn)} .trend.down{color:var(--live)}
+tr.away td{color:var(--dim)}
 @media (max-width:640px){ .ccode{display:none} .targets{margin-left:18px;margin-right:18px} }
 
 /* ---------- figure grid ---------- */
@@ -1326,6 +1330,28 @@ function drawTargets(el, chains, best){
   el.querySelectorAll('[data-x]').forEach((n) => { n.style.left = Math.max(0, Math.min(100, Number(n.dataset.x))) + '%'; });
 }
 
+// The last network difficulty seen per coin, and the one before it, so the
+// dashboard can say how the latest retarget moved it. Soqucoin retargets every
+// block, Dogecoin and Pepecoin likewise; Litecoin every 2016 blocks.
+const diffSeen = {};
+function diffTrend(name, value){
+  if(!(value > 0)) return '';
+  const seen = diffSeen[name];
+  if(!seen) diffSeen[name] = {value, prev:null, at:Date.now()};
+  else if(seen.value !== value) diffSeen[name] = {value, prev:seen.value, at:Date.now()};
+  const t = diffSeen[name];
+  if(!t.prev) return '<span class="trend">since ' + new Date(t.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) + '</span>';
+  const pct = (t.value/t.prev - 1) * 100;
+  return '<span class="trend ' + (pct > 0 ? 'up' : 'down') + '">' + (pct > 0 ? '▲ ' : '▼ ') +
+    Math.abs(pct).toFixed(1) + '% · ' + (since(t.at) === 'now' ? 'just now' : since(t.at) + ' ago') + '</span>';
+}
+// A block reward in whole coins: Litecoin's is small enough that decimals are
+// money, the others are thousands where decimals are noise.
+function coins(sats, name){
+  if(!(sats > 0)) return '';
+  return (sats/1e8).toLocaleString('en-US', {maximumFractionDigits: name === 'LTC' ? 4 : 0}) + ' ' + name;
+}
+
 function renderCoins(d){
   const chains = chainsOf(d);
   const peers = (lastPeers && Array.isArray(lastPeers.peers)) ? lastPeers.peers : [];
@@ -1352,17 +1378,38 @@ function renderCoins(d){
   } else {
     $('coinsBox').hidden = false;
     drawTargets($('targets'), chains, ownBest);
-    let h = '<table><thead><tr><th>Coin</th><th class="r hide">Difficulty</th><th class="r">Best, this port</th>' +
-      (live.length ? '<th class="r">Best, all ports</th>' : '') +
+    // Difficulty stays visible at phone width — it is what moves; the
+    // across-ports column is the one that gives way.
+    let h = '<table><thead><tr><th>Coin</th><th class="r">Difficulty</th><th class="r">Best, this port</th>' +
+      (live.length ? '<th class="r hide">Best, all ports</th>' : '') +
       '<th class="r">Expected wait</th></tr></thead><tbody>';
     for(const c of chains){
       const rate = live.length ? allRateFor(c.name) : rateOn(d, c.name);
+      // Height, what a block pays now, and the network's hashrate from its
+      // difficulty and target block time.
+      const net = c.blockSeconds > 0 && c.difficulty > 0 ? hashrate(c.difficulty * Math.pow(2, 32) / c.blockSeconds) : null;
+      const sub = [
+        c.height ? 'height ' + Number(c.height).toLocaleString('en-US') : '',
+        coins(c.reward, c.name),
+        net ? 'network ' + net.n + ' ' + net.u : '',
+      ].filter(Boolean).map(esc).join(' · ');
       h += '<tr class="' + coinClass(c.name) + '"><td><i class="cdot"></i>' + esc(c.label || c.name) +
-        '<span class="ccode">' + esc(c.name) + '</span></td>' +
-        '<td class="num r hide">' + compact(c.difficulty) + '</td>' +
+        '<span class="ccode">' + esc(c.name) + '</span>' + (sub ? '<div class="csub">' + sub + '</div>' : '') + '</td>' +
+        '<td class="num r">' + compact(c.difficulty) + diffTrend(c.name, c.difficulty) + '</td>' +
         '<td class="num r">' + share(bestOn(d, c.name), c.difficulty) + '</td>' +
-        (live.length ? '<td class="num r">' + share(allBestFor(c.name), c.difficulty) + '</td>' : '') +
+        (live.length ? '<td class="num r hide">' + share(allBestFor(c.name), c.difficulty) + '</td>' : '') +
         '<td class="num r">' + (rate > 0 ? '~' + duration(blockSeconds(c.difficulty, rate)) : '—') + '</td></tr>';
+    }
+    // A coin that is configured but not in the job right now — its node is
+    // down, syncing or refusing — gets a row saying so, rather than vanishing.
+    const extra = [['PEP', 'Pepecoin', d.pep], ['SOQ', 'Soqucoin', d.soq]];
+    for(const [name, label, st] of extra){
+      if(!st || chains.some((c) => c.name === name)) continue;
+      h += '<tr class="away ' + coinClass(name) + '"><td><i class="cdot"></i>' + label + '<span class="ccode">' + name + '</span>' +
+        '<div class="wwarn warn">left out of the jobs' + (st.unavailableSince ? ' for ' + since(st.unavailableSince) : '') +
+        (st.error ? ': ' + esc(String(st.error).slice(0, 140)) : '') + '</div></td>' +
+        '<td class="num r">—</td><td class="num r">—</td>' + (live.length ? '<td class="num r hide">—</td>' : '') +
+        '<td class="num r">—</td></tr>';
     }
     const partial = chains.some((c) => typeof c.best === 'number');
     $('coins').innerHTML = h + '</tbody></table><p class="foot">Expected wait is an average at the current hashrate of ' +

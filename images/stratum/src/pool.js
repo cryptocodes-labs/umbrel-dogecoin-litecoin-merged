@@ -2799,19 +2799,34 @@ class Pool extends EventEmitter {
       ? []
       : this.merged
         ? [
-            { name: 'LTC', label: 'Litecoin', height: job.height, difficulty: job.networkDifficulty, hashrate: allHashrate },
-            { name: 'DOGE', label: 'Dogecoin', height: job.auxHeight, difficulty: job.auxDifficulty, hashrate: allHashrate },
+            {
+              name: 'LTC', label: 'Litecoin', height: job.height, difficulty: job.networkDifficulty,
+              hashrate: allHashrate, reward: job.coinbaseValue, blockSeconds: 150,
+            },
+            {
+              name: 'DOGE', label: 'Dogecoin', height: job.auxHeight, difficulty: job.auxDifficulty,
+              hashrate: allHashrate, reward: job.auxValue, blockSeconds: 60,
+            },
             ...(job.extraAux || []).map((a) => ({
               name: a.name,
               label: a.name === 'PEP' ? 'Pepecoin' : a.name === 'SOQ' ? 'Soqucoin' : a.name,
               height: a.height,
               difficulty: a.difficulty,
               hashrate: a.name === 'PEP' ? pepHashrate : allHashrate,
+              // What the block pays (subsidy + fees, smallest unit) and the
+              // chain's target block time — with the difficulty, that gives
+              // the network's hashrate on the dashboard. Pepecoin and
+              // Soqucoin both aim for a block a minute.
+              reward: a.value,
+              blockSeconds: 60,
               // Only the shares made while this chain was being mined.
               best: this.stats.chainBest[a.name] ? this.stats.chainBest[a.name].diff : 0,
             })),
           ]
-        : [{ name: 'DOGE', label: 'Dogecoin', height: job.height, difficulty: job.networkDifficulty, hashrate: allHashrate }];
+        : [{
+            name: 'DOGE', label: 'Dogecoin', height: job.height, difficulty: job.networkDifficulty,
+            hashrate: allHashrate, reward: job.coinbaseValue, blockSeconds: 60,
+          }];
     return {
       chain: this.chain,
       mergedMining: !!this.merged,
