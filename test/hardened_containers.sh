@@ -78,14 +78,20 @@ for entry in "${NODES[@]}"; do
   [[ ${healthy} -eq 1 ]] && ok "${name}: starts read-only and the healthcheck passes as ${user}" \
     || bad "${name}: starts read-only and the healthcheck passes as ${user}" "$(docker logs "${c}" 2>&1 | tail -8)"
 
-  # A real RPC answer, through the cli and the generated config.
+  # A real RPC answer, through the cli and the generated config. The
+  # healthcheck counts a node that is still loading its block index as healthy
+  # (it is), so the first answer may be "loading"; it gets thirty seconds.
   conf="/data/.${name}/${name}.conf"
-  if docker exec "${c}" gosu "${user}" "${cli}" -conf="${conf}" -datadir="/data/.${name}" "${regflag[@]}" \
-       -rpcuser=umbrel -rpcpassword=hardened-password getblockchaininfo 2>/dev/null | grep -q '"chain": *"regtest"'; then
-    ok "${name}: answers RPC with the configured password"
-  else
-    bad "${name}: answers RPC with the configured password"
-  fi
+  answered=0
+  for _ in $(seq 1 15); do
+    if docker exec "${c}" gosu "${user}" "${cli}" -conf="${conf}" -datadir="/data/.${name}" "${regflag[@]}" \
+         -rpcuser=umbrel -rpcpassword=hardened-password getblockchaininfo 2>/dev/null | grep -q '"chain": *"regtest"'; then
+      answered=1; break
+    fi
+    sleep 2
+  done
+  [[ ${answered} -eq 1 ]] && ok "${name}: answers RPC with the configured password" \
+    || bad "${name}: answers RPC with the configured password" "$(docker logs "${c}" 2>&1 | tail -5)"
 
   # The daemon's real uid, from /proc inside the container.
   pid_uid="$(docker exec "${c}" sh -c "for p in /proc/[0-9]*; do if tr '\\0' ' ' < \$p/cmdline 2>/dev/null | grep -q '^${name}d '; then awk '/^Uid:/ {print \$2}' \$p/status; exit 0; fi; done" 2>/dev/null)"
