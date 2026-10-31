@@ -125,6 +125,51 @@ body.block-found .jackpot{display:block}
 .tot td{border-top:1px solid var(--line);color:var(--gold);font-family:var(--mono);font-size:13px}
 #coins td,#peers td.num,#peers td.r{white-space:nowrap}
 .pdist{font:11.5px/1.5 var(--mono);color:var(--dimmer);margin-top:3px}
+.csub{font:11.5px/1.5 var(--mono);color:var(--dimmer);margin-top:3px;white-space:normal}
+.trend{display:block;font:11px/1.4 var(--mono);margin-top:2px}
+.trend.up{color:var(--warn)} .trend.down{color:var(--live)}
+tr.away td{color:var(--dim)}
+
+/* ---------- coin cards ----------
+   One card per coin the pool mines, like the slots of a coin tray: a coloured
+   edge, the difficulty large because it is what moves, how it moved over the
+   last twelve hours, how close the best share came, and where a block pays. */
+.coincards{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:12px;margin-top:4px}
+.coin{position:relative;background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--line);
+  border-radius:4px;padding:16px 16px 14px 19px;overflow:hidden;min-width:0}
+.coin::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--c)}
+.coin.away{opacity:.78}
+.coin .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.coin .name{font-weight:600;font-size:15px;letter-spacing:.01em;white-space:nowrap}
+.coin .name i{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--c);margin-right:8px;vertical-align:0}
+.coin .name span{font:11px var(--mono);color:var(--dimmer);margin-left:6px;letter-spacing:.06em}
+.coin .pill{font:10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:4px 8px;border-radius:999px;
+  border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.coin .pill.ok{color:var(--live);border-color:rgba(139,176,107,.45)}
+.coin .pill.off{color:var(--warn);border-color:rgba(217,158,43,.45)}
+.coin .lbl{font:10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--dimmer)}
+.coin .diff{margin-top:14px;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.coin .diff b{font:600 27px/1 var(--mono);color:var(--cream);letter-spacing:-.01em}
+.coin .diff .trend{display:inline;margin:0;text-align:right}
+.coin svg.spark{display:block;width:100%;height:36px;min-height:0;margin-top:10px;overflow:visible}
+.coin .spark .l{fill:none;stroke:var(--c);stroke-width:1.5;vector-effect:non-scaling-stroke}
+.coin .spark .a{fill:var(--c);opacity:.09}
+.coin .sparkfoot{display:flex;justify-content:space-between;font:10px/1.4 var(--mono);color:var(--dimmer);margin-top:3px}
+.coin .lbl.gap{display:block;margin-top:16px}
+.coin .meter{position:relative;height:4px;background:var(--line);border-radius:2px;margin-top:8px}
+.coin .meter i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,transparent,var(--c));border-radius:2px;
+  transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.coin .meterfoot{display:flex;justify-content:space-between;gap:8px;font:11px/1.5 var(--mono);color:var(--dim);margin-top:5px}
+.coin .meterfoot b{color:var(--cream);font-weight:500}
+.coin dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:14px 0 0}
+.coin dt{font:11px/1.7 var(--mono);color:var(--dimmer)}
+.coin dd{margin:0;text-align:right;font:12px/1.7 var(--mono);color:var(--cream);min-width:0;overflow-wrap:anywhere}
+.coin dd.goodc{color:var(--gold-bright)} .coin dd.warnc{color:var(--warn)}
+.coin .pay{margin-top:13px;padding-top:10px;border-top:1px solid var(--line-soft);font:11px/1.5 var(--mono);color:var(--dim)}
+.coin .pay a{color:var(--gold);text-decoration:none;word-break:break-all}
+.coin .pay a:hover,.coin .pay a:focus-visible{text-decoration:underline}
+.coin .why{margin-top:12px;font:11.5px/1.5 var(--mono);color:var(--warn)}
+.oddsmx td.num{white-space:nowrap}
 @media (max-width:640px){ .ccode{display:none} .targets{margin-left:18px;margin-right:18px} }
 
 /* ---------- figure grid ---------- */
@@ -333,7 +378,10 @@ footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);
   </section>
 
   <h2>Chance of a block <span class="aside" id="oddsAside"></span></h2>
-  <div class="kv">
+  <!-- Merged mining: every coin has its own odds, from its own difficulty and
+       the hashrate that can win it. Filled by renderCoins. -->
+  <div id="oddsCoins" class="oddsmx" hidden></div>
+  <div class="kv" id="oddsKv">
     <div class="r"><span class="k">In the next 24 hours</span><span class="v" id="pDay">—</span></div>
     <div class="r"><span class="k">In the next month</span><span class="v" id="pMonth">—</span></div>
     <div class="r"><span class="k">In the next year</span><span class="v" id="pYear">—</span></div>
@@ -451,23 +499,17 @@ footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);
        and a dashboard that showed only Dogecoin would be describing half of
        what these hashes are buying. -->
   <section id="parentBox" hidden>
-    <h2>Litecoin <span class="aside">the chain your miners actually hash</span></h2>
+    <h2>Merged mining <span class="aside">how the aux chains are kept current</span></h2>
+    <!-- Height, difficulty, network, reward, odds and payout address of every
+         coin are on the coin cards above; this keeps what is about the
+         machinery that joins them. -->
     <div class="kv">
-      <div class="r"><span class="k">Block height</span><span class="v" id="pHeight">—</span></div>
-      <div class="r"><span class="k">Difficulty now</span><span class="v" id="pDiff">—</span></div>
-      <div class="r"><span class="k">Network hashrate</span><span class="v" id="pHash">—</span></div>
-      <div class="r"><span class="k">Your share of it</span><span class="v" id="pShare">—</span></div>
-      <div class="r"><span class="k">Block reward right now</span><span class="v" id="pReward">—</span></div>
-      <div class="r"><span class="k">Paid to</span><span class="v" id="pAddress">—</span></div>
-    </div>
-    <div class="kv spaced">
-      <div class="r"><span class="k">Chance of a Litecoin block in a year</span><span class="v" id="pOdds">—</span></div>
-      <div class="r"><span class="k">Chance of a Dogecoin block in a year</span><span class="v" id="dOdds">—</span></div>
       <!-- How the Dogecoin half is kept up to date, and what it has cost.
            Without this the longpoll is a claim in a release note: a loop that
            silently died looks exactly like a quiet chain. -->
       <div class="r"><span class="k">Following the Dogecoin tip</span><span class="v" id="pAuxLp">—</span></div>
-      <div class="r"><span class="k">Blocks lost to a moved tip</span><span class="v" id="pAuxMissed">—</span></div>
+      <div class="r"><span class="k">Dogecoin blocks lost to a moved tip</span><span class="v" id="pAuxMissed">—</span></div>
+      <div class="r"><span class="k">Pepecoin and Soqucoin blocks lost to a moved tip</span><span class="v" id="pExtraMissed">—</span></div>
     </div>
     <p class="empty" id="parentNote"></p>
   </section>
@@ -1326,6 +1368,69 @@ function drawTargets(el, chains, best){
   el.querySelectorAll('[data-x]').forEach((n) => { n.style.left = Math.max(0, Math.min(100, Number(n.dataset.x))) + '%'; });
 }
 
+// The last network difficulty seen per coin, and the one before it, so the
+// dashboard can say how the latest retarget moved it. Soqucoin retargets every
+// block, Dogecoin and Pepecoin likewise; Litecoin every 2016 blocks.
+const diffSeen = {};
+function diffTrend(name, value){
+  if(!(value > 0)) return '';
+  const seen = diffSeen[name];
+  if(!seen) diffSeen[name] = {value, prev:null, at:Date.now()};
+  else if(seen.value !== value) diffSeen[name] = {value, prev:seen.value, at:Date.now()};
+  const t = diffSeen[name];
+  if(!t.prev) return '<span class="trend">since ' + new Date(t.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) + '</span>';
+  const pct = (t.value/t.prev - 1) * 100;
+  return '<span class="trend ' + (pct > 0 ? 'up' : 'down') + '">' + (pct > 0 ? '▲ ' : '▼ ') +
+    Math.abs(pct).toFixed(1) + '% · ' + (since(t.at) === 'now' ? 'just now' : since(t.at) + ' ago') + '</span>';
+}
+// A block reward in whole coins: Litecoin's is small enough that decimals are
+// money, the others are thousands where decimals are noise.
+function coins(sats, name){
+  if(!(sats > 0)) return '';
+  return (sats/1e8).toLocaleString('en-US', {maximumFractionDigits: name === 'LTC' ? 4 : 0}) + ' ' + name;
+}
+
+// A chance is never certain: above 99.9% it says so rather than "100%".
+function chanceText(p){ return p >= 0.9995 ? '>99.9%' : percent(p); }
+// Where a coin's own block explorer shows an address.
+const EXPLORER = {
+  LTC: 'https://litecoinspace.org/address/',
+  DOGE: 'https://dogechain.info/address/',
+  PEP: 'https://pepeblocks.com/address/',
+  SOQ: 'https://explorer.soqu.org/address/',
+};
+function payLine(c){
+  if(c.payoutMode === 'miner'){
+    return '<div class="pay">paid to each miner\'s own address' +
+      (c.payoutAddress ? ' · pool fee to ' + esc(c.payoutAddress.slice(0, 8)) + '…' : '') + '</div>';
+  }
+  if(!c.payoutAddress) return '';
+  const a = String(c.payoutAddress);
+  const short = a.length > 22 ? a.slice(0, 10) + '…' + a.slice(-8) : a;
+  const url = EXPLORER[c.name];
+  return '<div class="pay">a block pays ' + (url
+    ? '<a href="' + esc(url + encodeURIComponent(a)) + '" target="_blank" rel="noopener noreferrer" title="' + esc(a) + '">' + esc(short) + '&nbsp;↗</a>'
+    : esc(short)) + '</div>';
+}
+// The last twelve hours of a coin's difficulty as a small line, in the coin's
+// own colour. Scaled to its own range: the point is how it moves, not where.
+function sparkSvg(hist){
+  const pts = (Array.isArray(hist) ? hist : []).filter((p) => Array.isArray(p) && p[1] > 0);
+  if(pts.length < 2){
+    return '<svg class="spark" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"></svg>' +
+      '<div class="sparkfoot"><span>collecting the last 12 h…</span><span></span></div>';
+  }
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0] || t0 + 1;
+  const vs = pts.map((p) => p[1]);
+  const lo = Math.min(...vs), hi = Math.max(...vs), span = hi - lo || hi * 0.01 || 1;
+  const xy = pts.map(([t, v]) => [((t - t0) / Math.max(1, t1 - t0)) * 100, 33 - ((v - lo) / span) * 30]);
+  const line = xy.map(([x, y], i) => (i ? 'L' : 'M') + x.toFixed(2) + ' ' + y.toFixed(2)).join(' ');
+  const hours = Math.max(1, Math.round((t1 - t0) / 3600000));
+  return '<svg class="spark" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true">' +
+      '<path class="a" d="' + line + ' L100 36 L0 36 Z"></path><path class="l" d="' + line + '"></path></svg>' +
+    '<div class="sparkfoot"><span>' + (hours >= 12 ? '12 h' : hours + ' h') + ' · low ' + compact(lo) + '</span><span>high ' + compact(hi) + '</span></div>';
+}
+
 function renderCoins(d){
   const chains = chainsOf(d);
   const peers = (lastPeers && Array.isArray(lastPeers.peers)) ? lastPeers.peers : [];
@@ -1352,23 +1457,81 @@ function renderCoins(d){
   } else {
     $('coinsBox').hidden = false;
     drawTargets($('targets'), chains, ownBest);
-    let h = '<table><thead><tr><th>Coin</th><th class="r hide">Difficulty</th><th class="r">Best, this port</th>' +
-      (live.length ? '<th class="r">Best, all ports</th>' : '') +
-      '<th class="r">Expected wait</th></tr></thead><tbody>';
+    // One card per coin: difficulty and how it moved, the best share against
+    // it, what a block pays, the odds, what was found, and where it pays.
+    const year = 365.25 * 86400;
+    let h = '<div class="coincards">';
     for(const c of chains){
       const rate = live.length ? allRateFor(c.name) : rateOn(d, c.name);
-      h += '<tr class="' + coinClass(c.name) + '"><td><i class="cdot"></i>' + esc(c.label || c.name) +
-        '<span class="ccode">' + esc(c.name) + '</span></td>' +
-        '<td class="num r hide">' + compact(c.difficulty) + '</td>' +
-        '<td class="num r">' + share(bestOn(d, c.name), c.difficulty) + '</td>' +
-        (live.length ? '<td class="num r">' + share(allBestFor(c.name), c.difficulty) + '</td>' : '') +
-        '<td class="num r">' + (rate > 0 ? '~' + duration(blockSeconds(c.difficulty, rate)) : '—') + '</td></tr>';
+      const own = bestOn(d, c.name);
+      const all = live.length ? allBestFor(c.name) : own;
+      const frac = c.difficulty > 0 ? own / c.difficulty : 0;
+      const netRate = c.blockSeconds > 0 && c.difficulty > 0 ? c.difficulty * Math.pow(2, 32) / c.blockSeconds : 0;
+      const net = netRate ? hashrate(netRate) : null;
+      const wait = blockSeconds(c.difficulty, rate);
+      const shareOfNet = netRate > 0 && rate > 0 ? rate / netRate : 0;
+      const found = c.blocksFound || 0;
+      h += '<article class="coin ' + coinClass(c.name) + '">' +
+        '<div class="top"><span class="name"><i></i>' + esc(c.label || c.name) + '<span>' + esc(c.name) + '</span></span>' +
+          // Litecoin and Dogecoin stay in every job; when their node stops
+          // answering the pool keeps mining the last work it had.
+          (((c.name === 'LTC' && d.templateError) || (c.name === 'DOGE' && d.auxError))
+            ? '<span class="pill off">node away</span>' : '<span class="pill ok">live</span>') + '</div>' +
+        '<div class="diff"><span><span class="lbl">difficulty</span><br><b>' + compact(c.difficulty) + '</b></span>' +
+          diffTrend(c.name, c.difficulty) + '</div>' +
+        sparkSvg(c.diffHistory) +
+        '<div class="lbl gap">best share, as part of a block</div>' +
+        '<div class="meter"><i data-w="' + rulerPos(frac) + '"></i></div>' +
+        '<div class="meterfoot"><span>this port <b>' + share(own, c.difficulty) + '</b></span>' +
+          (live.length && all > own ? '<span>all ports <b>' + share(all, c.difficulty) + '</b></span>' : '') + '</div>' +
+        '<dl>' +
+          '<dt>height</dt><dd>' + (c.height ? Number(c.height).toLocaleString('en-US') : '—') + '</dd>' +
+          '<dt>a block pays</dt><dd>' + (coins(c.reward, c.name) || '—') + '</dd>' +
+          '<dt>network</dt><dd>' + (net ? net.n + ' ' + net.u : '—') + '</dd>' +
+          '<dt>your share</dt><dd>' + (shareOfNet > 0 && shareOfNet < 1 ? '1 in ' + compact(1 / shareOfNet) : '—') + '</dd>' +
+          '<dt>expected wait</dt><dd>' + (wait > 0 ? '~' + duration(wait) : '—') + '</dd>' +
+          '<dt>chance in a year</dt><dd>' + (wait > 0 ? chanceText(1 - Math.exp(-year / wait)) : '—') + '</dd>' +
+          '<dt>blocks found</dt><dd class="' + (found ? 'goodc' : '') + '">' + found + '</dd>' +
+          (c.tipMissed ? '<dt>lost to a moved tip</dt><dd class="warnc">' + c.tipMissed + '</dd>' : '') +
+        '</dl>' +
+        payLine(c) +
+      '</article>';
     }
+    // A coin that is configured but not in the job right now — its node is
+    // down, syncing or refusing — keeps its card, saying so and why.
+    const extra = [['PEP', 'Pepecoin', d.pep], ['SOQ', 'Soqucoin', d.soq]];
+    for(const [name, label, st] of extra){
+      if(!st || chains.some((c) => c.name === name)) continue;
+      h += '<article class="coin away ' + coinClass(name) + '">' +
+        '<div class="top"><span class="name"><i></i>' + label + '<span>' + name + '</span></span>' +
+          '<span class="pill off">away</span></div>' +
+        '<div class="why">left out of the jobs' + (st.unavailableSince ? ' for ' + since(st.unavailableSince) : '') +
+          (st.error ? ': ' + esc(String(st.error).slice(0, 160)) : '') + '</div>' +
+        '<dl><dt>last height</dt><dd>' + (st.height ? Number(st.height).toLocaleString('en-US') : '—') + '</dd>' +
+          '<dt>lost to a moved tip</dt><dd>' + (st.tipMissed || 0) + '</dd></dl>' +
+        '<p class="pay">The other coins are mined as before; this one comes back by itself when its node answers.</p>' +
+      '</article>';
+    }
+    h += '</div>';
+
+    // The odds per coin, for the "Chance of a block" section.
+    const spans = [['24 hours', 86400], ['month', 2629800], ['year', year], ['ten years', 10 * year]];
+    let o = '<table><thead><tr><th>Coin</th>' + spans.map(([l]) => '<th class="r">' + l + '</th>').join('') +
+      '</tr></thead><tbody>';
+    for(const c of chains){
+      const wait = blockSeconds(c.difficulty, live.length ? allRateFor(c.name) : rateOn(d, c.name));
+      o += '<tr class="' + coinClass(c.name) + '"><td><i class="cdot"></i>' + esc(c.label || c.name) + '</td>' +
+        spans.map(([, t]) => '<td class="num r">' + (wait > 0 ? chanceText(1 - Math.exp(-t / wait)) : '—') + '</td>').join('') + '</tr>';
+    }
+    $('oddsCoins').innerHTML = o + '</tbody></table>';
+    $('oddsCoins').hidden = chains.length < 2;
+    $('oddsKv').hidden = chains.length >= 2;
     const partial = chains.some((c) => typeof c.best === 'number');
-    $('coins').innerHTML = h + '</tbody></table><p class="foot">Expected wait is an average at the current hashrate of ' +
+    $('coins').innerHTML = h + '<p class="foot">Expected wait and chance are averages at the current hashrate of ' +
       (live.length ? 'every port that mines that coin' : 'this port') + ', not a countdown.' +
       (partial ? ' Pepecoin and Soqucoin count only the shares made while they were being mined, since the app last started.' : '') +
       '</p>';
+    $('coins').querySelectorAll('[data-w]').forEach((n) => { n.style.width = Math.max(0, Math.min(100, Number(n.dataset.w))) + '%'; });
     $('coinsNote').textContent = chains.length > 1 ? 'one hash, ' + chains.length + ' chances' : '';
   }
 
@@ -1697,19 +1860,6 @@ async function tick(){
   }
   if(d.mergedMining && d.merged){
     $('parentBox').hidden = false;
-    $('pHeight').textContent = d.merged.parentHeight != null ? d.merged.parentHeight.toLocaleString('en-US') : '—';
-    $('pDiff').textContent = compact(d.merged.parentDifficulty);
-    // Litecoin targets a block every 2.5 minutes, Dogecoin every 1. The
-    // conversion from difficulty to network hashrate depends on that interval,
-    // and using Dogecoin's for both would overstate Litecoin's hashrate by 2.5x.
-    const pNet = d.merged.parentDifficulty > 0 ? (d.merged.parentDifficulty * Math.pow(2,32))/150 : 0;
-    const ph = hashrate(pNet);
-    $('pHash').textContent = ph.n + ' ' + ph.u;
-    const pShareOf = pNet > 0 ? d.totalHashrate/pNet : 0;
-    $('pShare').textContent = pShareOf > 0 && pShareOf < 1 ? '1 in ' + compact(1/pShareOf) : '—';
-    $('pReward').textContent = d.merged.parentReward != null
-      ? (d.merged.parentReward/1e8).toLocaleString('en-US',{maximumFractionDigits:4}) + ' LTC' : '—';
-    $('pAddress').textContent = d.merged.parentPayoutAddress || '—';
 
     // The aux longpoll, in the two numbers that say whether it is working.
     // `auxTipMoves` counts Dogecoin tips it caught — a longpoll that returns
@@ -1727,15 +1877,12 @@ async function tick(){
       ? d.auxTipMissed + (d.auxTipMissedAt ? ' · last ' + since(d.auxTipMissedAt) + ' ago' : '')
       : 'none';
     $('pAuxMissed').className = 'v' + (d.auxTipMissed ? ' badc' : '');
-
-    const year = 365*24*3600;
-    $('pOdds').textContent = pNet > 0
-      ? percent(blockProbability(d.totalHashrate, pNet, year)) : '—';
-    const dNet = diffForOdds ? (diffForOdds * Math.pow(2,32))/60 : 0;
-    $('dOdds').textContent = dNet > 0
-      ? percent(blockProbability(d.totalHashrate, dNet, year)) : '—';
+    const extraLost = [d.pep && ['PEP', d.pep.tipMissed], d.soq && ['SOQ', d.soq.tipMissed]].filter(Boolean);
+    $('pExtraMissed').textContent = extraLost.length
+      ? extraLost.map(([n, k]) => n + ' ' + (k || 0)).join(' · ') : 'not mined here';
+    $('pExtraMissed').className = 'v' + (extraLost.some(([, k]) => k) ? ' warnc' : '');
     $('parentNote').textContent =
-      'Every hash is offered to both chains at once. A share that meets Litecoin\'s target becomes a Litecoin block; one that meets Dogecoin\'s becomes a Dogecoin block; a very lucky one is both. Neither costs the other anything — this is why rented hashpower is priced off the two together.';
+      'Every hash is offered to every chain at once. A share that meets Litecoin\'s target becomes a Litecoin block; one that meets an aux chain\'s target becomes that chain\'s block; a very lucky one is several. None costs another anything — the aux chains are carried in the Litecoin coinbase, one 44-byte commitment for all of them.';
   } else {
     $('parentBox').hidden = true;
   }
@@ -1796,7 +1943,16 @@ async function tick(){
   }
 
   $('cUrl').textContent = 'stratum+tcp://' + location.hostname + ':' + d.stratumPort;
-  $('cUser').textContent = d.payoutAddress || '(no address configured)';
+  // What goes in the username depends on the mode, and saying the wrong one
+  // is how a miner ends up configured for payouts that never happen.
+  const paidCoins = chainsOf(d).filter((c) => c.payoutAddress);
+  if(d.mergedMining && d.publicMerged){
+    $('cUser').textContent = 'LTC-address.DOGE-address' + (d.pep ? '.PEP-address' : '') + '.rig1';
+  } else if(d.mergedMining && d.lockPayoutAddress){
+    $('cUser').textContent = 'rig1';
+  } else {
+    $('cUser').textContent = d.payoutAddress || '(no address configured)';
+  }
   // The username field means different things depending on one setting, and a
   // dashboard that describes the other one is worse than saying nothing.
   // The rented profile means the port is meant to be reachable from the
@@ -1808,9 +1964,16 @@ async function tick(){
   } else {
     $('exposureNote').className = 'notice';
   }
-  $('connectNote').textContent = d.lockPayoutAddress
-    ? 'Every block pays the address above, whatever a worker puts in the username field — that is what LOCK_PAYOUT_ADDRESS does, and it is why this port is safe to expose. Use the username for a name you will recognise in the table. The password is ignored; miners insist on one, so send anything.'
-    : 'Put a Dogecoin address in the username field and any block that worker finds pays that address. Anything else falls back to the address configured for this app. The password is ignored — miners insist on one, so send anything.';
+  $('connectNote').textContent = d.mergedMining && d.publicMerged
+    ? 'Each miner is paid at the addresses in its own username: Litecoin first, then Dogecoin' +
+      (d.pep ? ', then optionally Pepecoin' : '') + ', then a name for the rig, separated by dots. The pool keeps its fee on every coin. The password is ignored; miners insist on one, so send anything.'
+    : d.mergedMining && d.lockPayoutAddress
+      ? 'Any name will do: every block of every coin pays the addresses configured for this app, whatever a worker puts in the username field — ' +
+        (paidCoins.length ? paidCoins.map((c) => c.name + ' ' + String(c.payoutAddress).slice(0, 8) + '…').join(', ') : 'see the coin cards') +
+        '. The coin cards above show each address in full. Use the username for a name you will recognise in the table. The password is ignored; send anything.'
+      : d.lockPayoutAddress
+        ? 'Every block pays the address above, whatever a worker puts in the username field — that is what LOCK_PAYOUT_ADDRESS does, and it is why this port is safe to expose. Use the username for a name you will recognise in the table. The password is ignored; miners insist on one, so send anything.'
+        : 'Put a Dogecoin address in the username field and any block that worker finds pays that address. Anything else falls back to the address configured for this app. The password is ignored — miners insist on one, so send anything.';
 
   // The dedicated rented-capacity port — see RENTED_STRATUM_PORT in the
   // README. Hidden entirely unless it was actually configured, so a pool

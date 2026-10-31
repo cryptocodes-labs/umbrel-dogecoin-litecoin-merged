@@ -314,6 +314,29 @@ async function hostileNodeChecks() {
     clients.every((c) => c.singleAddress === true), clients.map((c) => c.singleAddress).join());
 }
 
+console.log('\ndifficulty history for the coin cards');
+{
+  const pool = new Pool({ rpc: { host: 'h', port: 1 }, stratumPort: 0, payoutAddress: DOGE_ADDR });
+  const realNow = Date.now;
+  let t = 1786000000000;
+  Date.now = () => t;
+  try {
+    pool.recordChainDifficulties([{ name: 'SOQ', difficulty: 100 }]);
+    t += 60 * 1000;
+    pool.recordChainDifficulties([{ name: 'SOQ', difficulty: 110 }]);
+    check('within five minutes the latest value stands for the bucket',
+      pool.chainDiffHistory.SOQ.length === 1 && pool.chainDiffHistory.SOQ[0][1] === 110, JSON.stringify(pool.chainDiffHistory.SOQ));
+    t += 5 * 60 * 1000;
+    pool.recordChainDifficulties([{ name: 'SOQ', difficulty: 120 }, { name: 'LTC', difficulty: 0 }]);
+    check('a new bucket every five minutes', pool.chainDiffHistory.SOQ.length === 2);
+    check('a zero difficulty is not recorded', !pool.chainDiffHistory.LTC);
+    for (let i = 0; i < 300; i++) { t += 5 * 60 * 1000; pool.recordChainDifficulties([{ name: 'SOQ', difficulty: 100 + i }]); }
+    check('twelve hours at most (144 points)', pool.chainDiffHistory.SOQ.length === 144, String(pool.chainDiffHistory.SOQ.length));
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 console.log('\nthe push notification names the coin');
 {
   // sw.js runs in the browser; a VM with a stub `self` is enough to call the

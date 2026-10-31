@@ -751,6 +751,8 @@ function trimPeerStatus(s) {
     // same for the hashrate that can win it.
     ...(typeof c.best === 'number' && Number.isFinite(c.best) ? { best: c.best } : {}),
     ...(typeof c.hashrate === 'number' && Number.isFinite(c.hashrate) ? { hashrate: c.hashrate } : {}),
+    ...(typeof c.reward === 'number' && Number.isFinite(c.reward) ? { reward: c.reward } : {}),
+    ...(typeof c.blockSeconds === 'number' && Number.isFinite(c.blockSeconds) ? { blockSeconds: c.blockSeconds } : {}),
   }));
   return {
     totalHashrate: num(s.totalHashrate),

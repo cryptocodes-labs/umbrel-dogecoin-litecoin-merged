@@ -264,6 +264,19 @@ const counts = () => Promise.all([
     check('the status lists all four coins with their own difficulty, for the distance per coin',
       chains.map((c) => c.name).join() === 'LTC,DOGE,PEP,SOQ' && chains.every((c) => c.difficulty > 0), JSON.stringify(chains));
     const soqChain = chains.find((c) => c.name === 'SOQ');
+    check('each coin card knows where its blocks pay, on the private port',
+      soqChain && soqChain.payoutAddress === poolSoq && soqChain.payoutMode === 'pool' &&
+      chains.find((c) => c.name === 'LTC').payoutAddress === poolLtc && chains.find((c) => c.name === 'DOGE').payoutAddress === poolDoge,
+      JSON.stringify(chains.map((c) => [c.name, c.payoutAddress, c.payoutMode])));
+    check('and counts the blocks found per coin (one each here)',
+      chains.every((c) => c.blocksFound === 1), JSON.stringify(chains.map((c) => [c.name, c.blocksFound])));
+    check('and carries a difficulty history for the line on each card',
+      chains.every((c) => Array.isArray(c.diffHistory) && c.diffHistory.length >= 1 && c.diffHistory[0][1] > 0),
+      JSON.stringify(chains.map((c) => [c.name, (c.diffHistory || []).length])));
+    check('the status says this is not the public port', pool.snapshot().publicMerged === false);
+    check('every coin reports its block reward and target block time, for the dashboard',
+      chains.every((c) => c.reward > 0 && c.blockSeconds > 0) && soqChain && soqChain.blockSeconds === 60 &&
+      chains.find((c) => c.name === 'LTC').blockSeconds === 150, JSON.stringify(chains));
     check('and Soqucoin\'s own best share counts the share made while it was mined',
       soqChain && soqChain.best > 0, JSON.stringify(soqChain));
     m.socket.destroy();

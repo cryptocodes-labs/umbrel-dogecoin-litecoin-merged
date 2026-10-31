@@ -232,6 +232,10 @@ class Pool extends EventEmitter {
     // a new tip rather than a mempool update. Both are surfaced: zero tip moves
     // on a running merged pool means the loop is not doing its job, which
     // otherwise looks exactly like a quiet chain.
+    // The network difficulty of every chain this pool mines, one point per
+    // five minutes over the last twelve hours, so the dashboard can draw how
+    // each one moved. In memory: it starts again at a restart.
+    this.chainDiffHistory = {};
     this.auxLongpollSignals = 0;
     this.auxTipMoves = 0;
     this.lastAuxTip = null;
@@ -930,6 +934,19 @@ class Pool extends EventEmitter {
   // damped by 1/8), so the instantaneous value swings by tens of percent within
   // minutes. Deriving "expected wait" from a single sample makes that number
   // jump around for no real reason.
+  recordChainDifficulties(points) {
+    const now = Date.now();
+    for (const { name, difficulty } of points) {
+      if (!(difficulty > 0)) continue;
+      const h = this.chainDiffHistory[name] || (this.chainDiffHistory[name] = []);
+      const last = h[h.length - 1];
+      // Within a five-minute bucket the latest value stands for the bucket.
+      if (last && now - last[0] < 5 * 60 * 1000) last[1] = difficulty;
+      else h.push([now, difficulty]);
+      while (h.length > 144) h.shift();
+    }
+  }
+
   recordNetworkDifficulty(difficulty, prevHash) {
     if (!(difficulty > 0)) return;
     if (!this.difficultyHistory) this.difficultyHistory = [];
@@ -1296,6 +1313,11 @@ class Pool extends EventEmitter {
         })
       : new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock, { extraAux });
     job.pepHash = pepHash;
+    this.recordChainDifficulties([
+      { name: 'LTC', difficulty: job.networkDifficulty },
+      { name: 'DOGE', difficulty: job.auxDifficulty },
+      ...job.extraAux.map((a) => ({ name: a.name, difficulty: a.difficulty })),
+    ]);
     job.soqHash = soqHash;
     // Public mode: the Dogecoin template every miner's own aux block is built
     // from. Kept on the job so a variant is always built from the same
@@ -1351,6 +1373,7 @@ class Pool extends EventEmitter {
 
     const id = (++this.jobCounter).toString(16).padStart(8, '0');
     const job = new Job(id, template, this.payoutScript, this.config.coinbaseTag);
+    this.recordChainDifficulties([{ name: 'DOGE', difficulty: job.networkDifficulty }]);
     this.jobs.set(id, job);
     this.currentJob = job;
     if (isNewBlock) this.recordNetworkDifficulty(job.networkDifficulty, template.previousblockhash);
@@ -2799,22 +2822,63 @@ class Pool extends EventEmitter {
       ? []
       : this.merged
         ? [
-            { name: 'LTC', label: 'Litecoin', height: job.height, difficulty: job.networkDifficulty, hashrate: allHashrate },
-            { name: 'DOGE', label: 'Dogecoin', height: job.auxHeight, difficulty: job.auxDifficulty, hashrate: allHashrate },
+            {
+              name: 'LTC', label: 'Litecoin', height: job.height, difficulty: job.networkDifficulty,
+              hashrate: allHashrate, reward: job.coinbaseValue, blockSeconds: 150,
+            },
+            {
+              name: 'DOGE', label: 'Dogecoin', height: job.auxHeight, difficulty: job.auxDifficulty,
+              hashrate: allHashrate, reward: job.auxValue, blockSeconds: 60,
+            },
             ...(job.extraAux || []).map((a) => ({
               name: a.name,
               label: a.name === 'PEP' ? 'Pepecoin' : a.name === 'SOQ' ? 'Soqucoin' : a.name,
               height: a.height,
               difficulty: a.difficulty,
               hashrate: a.name === 'PEP' ? pepHashrate : allHashrate,
+              // What the block pays (subsidy + fees, smallest unit) and the
+              // chain's target block time — with the difficulty, that gives
+              // the network's hashrate on the dashboard. Pepecoin and
+              // Soqucoin both aim for a block a minute.
+              reward: a.value,
+              blockSeconds: 60,
               // Only the shares made while this chain was being mined.
               best: this.stats.chainBest[a.name] ? this.stats.chainBest[a.name].diff : 0,
             })),
           ]
-        : [{ name: 'DOGE', label: 'Dogecoin', height: job.height, difficulty: job.networkDifficulty, hashrate: allHashrate }];
+        : [{
+            name: 'DOGE', label: 'Dogecoin', height: job.height, difficulty: job.networkDifficulty,
+            hashrate: allHashrate, reward: job.coinbaseValue, blockSeconds: 60,
+          }];
+    // Per coin, for the dashboard's coin cards: where its blocks are paid,
+    // how many were found, how many were lost to a tip that moved before the
+    // proof arrived, and how its difficulty moved. On the public port each
+    // miner is paid at its own addresses; the configured one gets the fee.
+    const payTo = {
+      LTC: this.merged ? this.config.ltcPayoutAddress : null,
+      DOGE: this.config.payoutAddress,
+      PEP: this.pep ? this.pep.payoutAddress : null,
+      SOQ: this.soq ? this.soq.payoutAddress : null,
+    };
+    const lostTo = {
+      LTC: 0,
+      DOGE: this.stats.auxTipMissed || 0,
+      PEP: this.stats.pepTipMissed || 0,
+      SOQ: this.stats.soqTipMissed || 0,
+    };
+    for (const c of chains) {
+      c.payoutAddress = payTo[c.name] || null;
+      c.payoutMode = this.publicMerged ? 'miner' : 'pool';
+      c.blocksFound = this.stats.blocks.filter((b) => b && b.accepted === true && (b.chain || 'DOGE') === c.name).length;
+      c.tipMissed = lostTo[c.name] || 0;
+      c.diffHistory = (this.chainDiffHistory[c.name] || []).map(([t, v]) => [t, v]);
+    }
     return {
       chain: this.chain,
       mergedMining: !!this.merged,
+      // Which kind of port this is: on the public one every miner is paid at
+      // the addresses in its username, so the dashboard explains it that way.
+      publicMerged: !!this.publicMerged,
       merged,
       chains,
       stratumPort: this.config.stratumPort,
