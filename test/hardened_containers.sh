@@ -28,19 +28,31 @@ bad()   { FAIL=$((FAIL + 1)); red "  ✗ $1"; if [[ $# -gt 1 ]]; then printf '  
 
 command -v docker >/dev/null || { info "skipped: no docker"; exit 0; }
 
-# name | image dir | daemon user | data var | cli var | cli
+# name | image dir | daemon user | how regtest is chosen | cli var | cli
+#
+# Litecoin Core 0.21 refuses network-specific settings outside a [regtest]
+# section, so its entrypoint selects the network itself (NETWORK=regtest writes
+# regtest=1 and the section); the cli then reads regtest from the config. The
+# Dogecoin-Core-based nodes take -regtest on the command line.
 NODES=(
-  "dogecoin|core|dogecoin|DOGECOIN_DATA|DOGECOIN_CLI_ARGS|dogecoin-cli"
-  "litecoin|ltc-core|litecoin|LITECOIN_DATA|LITECOIN_CLI_ARGS|litecoin-cli"
-  "pepecoin|pep-core|pepecoin|PEPECOIN_DATA|PEPECOIN_CLI_ARGS|pepecoin-cli"
-  "soqucoin|soq-core|soqucoin|SOQUCOIN_DATA|SOQUCOIN_CLI_ARGS|soqucoin-cli"
+  "dogecoin|core|dogecoin|flag|DOGECOIN_CLI_ARGS|dogecoin-cli"
+  "litecoin|ltc-core|litecoin|env|LITECOIN_CLI_ARGS|litecoin-cli"
+  "pepecoin|pep-core|pepecoin|flag|PEPECOIN_CLI_ARGS|pepecoin-cli"
+  "soqucoin|soq-core|soqucoin|flag|SOQUCOIN_CLI_ARGS|soqucoin-cli"
 )
 
 cleanup() { for n in "${NODES[@]}"; do docker rm -f "hardened-${n%%|*}" >/dev/null 2>&1 || true; done; }
 trap cleanup EXIT
 
 for entry in "${NODES[@]}"; do
-  IFS='|' read -r name dir user datavar clivar cli <<< "${entry}"
+  IFS='|' read -r name dir user regtest clivar cli <<< "${entry}"
+  if [[ "${regtest}" == "env" ]]; then
+    net=(-e NETWORK=regtest -e EXTRA_ARGS="-listen=0 -dnsseed=0" -e "${clivar}=")
+    regflag=()
+  else
+    net=(-e EXTRA_ARGS="-regtest -listen=0 -dnsseed=0" -e "${clivar}=-regtest")
+    regflag=(-regtest)
+  fi
   info "${name}"
   img="hardened-test/${name}:ci"
   if ! docker build -q -t "${img}" "${REPO_ROOT}/images/${dir}" >/dev/null; then
@@ -55,7 +67,7 @@ for entry in "${NODES[@]}"; do
     --security-opt no-new-privileges:true \
     -v "${vol}:/data" \
     -e RPC_PASSWORD=hardened-password -e RPC_USER=umbrel -e DBCACHE=32 \
-    -e EXTRA_ARGS="-regtest -listen=0 -dnsseed=0" -e "${clivar}=-regtest" \
+    "${net[@]}" \
     "${img}" >/dev/null || { bad "${name}: the container starts"; continue; }
 
   healthy=0
@@ -68,16 +80,17 @@ for entry in "${NODES[@]}"; do
 
   # A real RPC answer, through the cli and the generated config.
   conf="/data/.${name}/${name}.conf"
-  if docker exec "${c}" gosu "${user}" "${cli}" -conf="${conf}" -datadir="/data/.${name}" -regtest \
+  if docker exec "${c}" gosu "${user}" "${cli}" -conf="${conf}" -datadir="/data/.${name}" "${regflag[@]}" \
        -rpcuser=umbrel -rpcpassword=hardened-password getblockchaininfo 2>/dev/null | grep -q '"chain": *"regtest"'; then
     ok "${name}: answers RPC with the configured password"
   else
     bad "${name}: answers RPC with the configured password"
   fi
 
-  pid_user="$(docker top "${c}" -eo user,comm 2>/dev/null | awk -v d="${name}d" '$2 == d {print $1}' | head -1)"
-  [[ -n "${pid_user}" && "${pid_user}" != "root" ]] && ok "${name}: the daemon runs as ${pid_user}, not root" \
-    || bad "${name}: the daemon runs as an unprivileged user" "$(docker top "${c}" -eo user,comm 2>&1 | head -5)"
+  # The daemon's real uid, from /proc inside the container.
+  pid_uid="$(docker exec "${c}" sh -c "for p in /proc/[0-9]*; do if tr '\\0' ' ' < \$p/cmdline 2>/dev/null | grep -q '^${name}d '; then awk '/^Uid:/ {print \$2}' \$p/status; exit 0; fi; done" 2>/dev/null)"
+  [[ -n "${pid_uid}" && "${pid_uid}" != "0" ]] && ok "${name}: the daemon runs as uid ${pid_uid}, not root" \
+    || bad "${name}: the daemon runs as an unprivileged user" "uid '${pid_uid}'"
 
   if docker exec "${c}" sh -c 'echo x > /usr/local/bin/x' >/dev/null 2>&1; then
     bad "${name}: the image is read-only"
