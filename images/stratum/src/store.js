@@ -57,7 +57,9 @@ const SHORT_SERIES_SAMPLES = 240;
 // Kept apart from the minute series, because that one is cut down when many
 // workers share its budget; a week of hours is 168 entries a worker, small
 // enough to keep for every worker the history holds.
-const WORKER_HOUR_SAMPLES = 7 * 24;
+// One more than the 168 hours of a week: the window starts at the hour a week
+// ago, which is only partly over, and the current hour is only partly begun.
+const WORKER_HOUR_SAMPLES = 7 * 24 + 1;
 const WORKER_HOURS_TTL_MS = 7 * 24 * 3600 * 1000;
 // The least history an average is shown on: ten minutes for the hour, half an
 // hour for the day and the week. Fewer than that is a ramp-up, not an average.
@@ -624,6 +626,7 @@ class Store {
         for (const w of Object.values(this.state.workers)) {
           if (Array.isArray(w.samples)) w.samples = w.samples.filter((p) => p[0] <= horizon);
           if (Array.isArray(w.hours)) w.hours = w.hours.filter((p) => p[0] <= horizon);
+          if (w.trimmedAt > horizon) w.trimmedAt = null;
         }
         if (s.workerHoursSince > horizon) s.workerHoursSince = Math.ceil(ts / 3600) * 3600;
         this.log('re-anchored the per-worker history to the current time');
@@ -763,6 +766,7 @@ class Store {
       for (const w of Object.values(s.workers)) {
         if (Array.isArray(w.samples)) w.samples = w.samples.filter((p) => p[0] <= horizon);
         if (Array.isArray(w.hours)) w.hours = w.hours.filter((p) => p[0] <= horizon);
+        if (w.trimmedAt > horizon) w.trimmedAt = null;
       }
       if (s.workerHoursSince > horizon) s.workerHoursSince = Math.ceil(ts / 3600) * 3600;
       this.log(
@@ -821,11 +825,14 @@ class Store {
     if (cached) return cached;
     const w = this.workerRecord(key);
     const ts = Math.round(now / 1000);
-    const weekFrom = Math.max(Math.floor((ts - 7 * 86400) / 3600) * 3600, s.workerHoursSince || Infinity);
+    const hoursFrom = (seconds) => Math.max(Math.floor((ts - seconds) / 3600) * 3600, s.workerHoursSince || Infinity);
+    // A minute series cut to share the budget (many workers on one pool) has
+    // no full day; the hourly means do, and are never cut.
+    const h24 = minuteAverage(s.minuteSamples, w, ts - 86400, MIN_MINUTES_LONG);
     const out = {
       h1: minuteAverage(s.minuteSamples, w, ts - 3600, MIN_MINUTES_HOUR),
-      h24: minuteAverage(s.minuteSamples, w, ts - 86400, MIN_MINUTES_LONG),
-      d7: hourAverage(s.hourSamples, w, weekFrom, MIN_MINUTES_LONG),
+      h24: h24 !== null || !(w && w.trimmedAt) ? h24 : hourAverage(s.hourSamples, w, hoursFrom(86400), MIN_MINUTES_LONG),
+      d7: hourAverage(s.hourSamples, w, hoursFrom(7 * 86400), MIN_MINUTES_LONG),
     };
     this.averageCache.byName.set(key, out);
     return out;

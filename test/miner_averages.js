@@ -26,7 +26,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const u = require('../images/stratum/src/util');
-const { Store } = require('../images/stratum/src/store');
+const { Store, WORKER_HOUR_SAMPLES } = require('../images/stratum/src/store');
 const { Pool, workerName } = require('../images/stratum/src/pool');
 
 let failures = 0;
@@ -100,7 +100,7 @@ console.log('\na series cut to share the budget gives no day figure past the cut
   w.trimmedAt = w.samples[0][0];
   s.averageCache = null;
   const v = s.workerAverages('a', now);
-  check('the day reaches past the cut: null, not a quarter of the rate', v.h24 === null, JSON.stringify(v));
+  check('the day reaches past the cut: taken from the hourly means, not a third of the rate', near(v.h24, 100), JSON.stringify(v));
   check('the hour is inside what is left: still there', near(v.h1, 100), JSON.stringify(v));
 
   // And pruneWorkerSamples itself marks the cut: ten workers with a full day
@@ -115,8 +115,9 @@ console.log('\na series cut to share the budget gives no day figure past the cut
   const cut = t.workerRecord('w0');
   check('a series over the budget is cut and the cut is recorded',
     cut.samples.length < 1440 && cut.trimmedAt === cut.samples[0][0], `${cut.samples.length} ${cut.trimmedAt}`);
-  check('its day figure is null rather than understated',
-    t.workerAverages('w0', T0 + 1439 * 60000 + 1000).h24 === null);
+  check('its day figure comes from the hourly means rather than being understated',
+    near(t.workerAverages('w0', T0 + 1439 * 60000 + 1000).h24, 10), JSON.stringify(t.workerAverages('w0', T0 + 1439 * 60000 + 1000)));
+
 }
 
 console.log('\nthe week starts at the first whole hour it was kept');
@@ -132,6 +133,13 @@ console.log('\nthe week starts at the first whole hour it was kept');
     since === Math.ceil(T0 / 1000 / 3600) * 3600, String(since));
   const v = s.workerAverages('a', T0 + 149 * 60000 + 1000);
   check('the week is the rate, not a fraction diluted by the pool\'s older hours', near(v.d7, 100), JSON.stringify(v));
+  // Eight days of a steady miner: the week is exactly its rate, the hour a
+  // week ago and the current one included.
+  const long = new Store(null);
+  long.load();
+  for (let i = 0; i < 8 * 1440; i++) minute(long, T0 + i * 60000, { a: 100 });
+  const week = long.workerAverages('a', T0 + (8 * 1440 - 1) * 60000 + 1000);
+  check('after eight days the week of a steady miner is its rate, not an hour short', near(week.d7, 100), JSON.stringify(week));
   check('hourly means are [hour, mean, minutes]',
     s.workerRecord('a').hours.every((p) => p[0] % 3600 === 0 && p[1] === 100 && p[2] >= 1 && p[2] <= 60));
 }
@@ -158,7 +166,7 @@ console.log('\nthe hourly means survive a restart; a hostile file does not');
   hostile.load();
   const h = hostile.workerRecord('a');
   check('a week of hours at most, numbers only, minutes at least one',
-    h.hours.length === 168 && h.hours.every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[2] >= 1), String(h.hours.length));
+    h.hours.length === WORKER_HOUR_SAMPLES && WORKER_HOUR_SAMPLES === 169 && h.hours.every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[2] >= 1), String(h.hours.length));
   check('a start far in the future is dropped', hostile.state.workerHoursSince === null, String(hostile.state.workerHoursSince));
   check('a cut mark that is not a time is dropped', h.trimmedAt === null, String(h.trimmedAt));
 }

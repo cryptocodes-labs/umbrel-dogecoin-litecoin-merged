@@ -737,6 +737,11 @@ function parsePeerPools(raw) {
 // does not expect; names are escaped again where they are drawn. A worker of
 // an older peer simply has no averages.
 const PEER_WORKERS = 200;
+// One detail panel asks one peer at a time; a few at once is a person with
+// several tabs. Each costs an outgoing connection and up to PEER_MAX_BYTES of
+// memory, so more than this at once is refused rather than queued.
+const PEER_WORKER_CONCURRENCY = 4;
+let peerWorkerInFlight = 0;
 const PEER_OFFLINE_WORKERS = 20;
 const ADDRESS_RE = /^[A-Za-z0-9]{20,100}$/;
 const peerNum = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
@@ -795,7 +800,7 @@ function trimPeerStatus(s) {
     }
     if (s.networkDifficulty) chains.push({ name: 'DOGE', label: 'Dogecoin', height: s.height, difficulty: s.networkDifficulty });
   }
-  chains = chains.slice(0, 8).map((c) => ({
+  chains = chains.filter((c) => c && typeof c === 'object').slice(0, 8).map((c) => ({
     name: String(c.name || '').slice(0, 8),
     label: String(c.label || c.name || '').slice(0, 24),
     height: num(c.height),
@@ -807,6 +812,10 @@ function trimPeerStatus(s) {
     ...(typeof c.hashrate === 'number' && Number.isFinite(c.hashrate) ? { hashrate: c.hashrate } : {}),
     ...(typeof c.reward === 'number' && Number.isFinite(c.reward) ? { reward: c.reward } : {}),
     ...(typeof c.blockSeconds === 'number' && Number.isFinite(c.blockSeconds) ? { blockSeconds: c.blockSeconds } : {}),
+    // Who a block on this chain pays, so the miners of a private peer can be
+    // grouped under its addresses as this port's are.
+    ...(peerAddress(c.payoutAddress) ? { payoutAddress: c.payoutAddress } : {}),
+    ...(c.payoutMode === 'pool' || c.payoutMode === 'miner' ? { payoutMode: c.payoutMode } : {}),
   }));
   return {
     totalHashrate: num(s.totalHashrate),
@@ -917,7 +926,15 @@ async function fetchPeerStatus(peer) {
   const r = await fetchPeerJson(peer, '/api/status');
   if (!r.ok) return { ok: false, error: r.error === 'not JSON' ? 'not a pool status' : r.error };
   const s = r.body;
-  return s && s.ok ? { ok: true, status: trimPeerStatus(s) } : { ok: false, error: 'pool not running' };
+  if (!s || typeof s !== 'object' || !s.ok) return { ok: false, error: 'pool not running' };
+  // An answer that is JSON but not shaped like a status must fail THIS peer
+  // only. Thrown out of here it would reject pollPeers' Promise.all, and no
+  // peer would ever be read again — the last good figures frozen as "ok".
+  try {
+    return { ok: true, status: trimPeerStatus(s) };
+  } catch {
+    return { ok: false, error: 'not a pool status' };
+  }
 }
 
 const peerPools = parsePeerPools(process.env.PEER_POOLS);
@@ -1259,6 +1276,11 @@ const server = http.createServer((req, res) => {
   // configured peer can be asked, by its place in PEER_POOLS, and only for a
   // worker name; the answer is re-typed before it is passed on.
   if (url.pathname === '/api/peer-worker') {
+    if (peerWorkerInFlight >= PEER_WORKER_CONCURRENCY) {
+      res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '2' });
+      res.end(JSON.stringify({ ok: false, error: 'busy' }));
+      return;
+    }
     const index = Number(url.searchParams.get('peer'));
     const name = url.searchParams.get('name') || '';
     const peer = Number.isInteger(index) && index >= 0 && index < peerPools.length ? peerPools[index] : null;
@@ -1270,11 +1292,16 @@ const server = http.createServer((req, res) => {
       answer(400, { ok: false, error: 'unknown worker' });
       return;
     }
+    peerWorkerInFlight++;
     fetchPeerJson(peer, `/api/worker?name=${encodeURIComponent(name)}`).then((r) => {
       const w = r.ok && r.body && r.body.ok && r.body.worker && typeof r.body.worker === 'object' ? r.body.worker : null;
       if (!w) answer(404, { ok: false, error: r.ok ? 'unknown worker' : r.error });
       else answer(200, { ok: true, name, peer: peer.name, worker: trimPeerWorkerHistory(w) });
-    });
+    }).catch(() => {
+      if (!res.headersSent) answer(502, { ok: false, error: 'not a worker history' });
+      else res.destroy();
+    })
+      .finally(() => { peerWorkerInFlight--; });
     return;
   }
 

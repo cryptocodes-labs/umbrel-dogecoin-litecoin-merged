@@ -91,6 +91,11 @@ const OLD_PEER = {
   workers: [{ name: 'a' }, { name: 'b' }],
 };
 
+// JSON, "ok", but not shaped like a status: a chain that is null, a name that
+// cannot be turned into text. It must fail on its own, not stop every peer
+// from being read.
+const BROKEN_PEER = JSON.parse('{"ok":true,"chains":[null,{"name":{"toString":1}}],"workers":[null,7,{"worker":{"toString":1}}]}');
+
 let hostile = false;
 // A peer that sends headers and then one byte a second, for ever: the socket
 // is never silent long enough for a plain socket timeout to fire.
@@ -143,9 +148,11 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   const a = peerServer(NEW_PEER);
   const b = peerServer(OLD_PEER);
   const c = tricklePeer();
+  const e = peerServer(BROKEN_PEER);
   const pa = await listen(a);
   const pb = await listen(b);
   const pc = await listen(c);
+  const pe = await listen(e);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doge-peers-'));
 
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'images/stratum/src/server.js')], {
@@ -160,7 +167,7 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
       STALL_RESTART_MINUTES: '0',
       // Three good entries (one dead) and two that must be ignored: a URL and
       // a host with a path in it.
-      PEER_POOLS: `3335=localhost:${pa},3339=localhost:${pb},dead=localhost:1,slow=localhost:${pc},` +
+      PEER_POOLS: `3335=localhost:${pa},3339=localhost:${pb},dead=localhost:1,slow=localhost:${pc},broken=localhost:${pe},` +
         'evil=http://example.com:80,bad=localhost:80/api',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -170,7 +177,7 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   child.stderr.on('data', (d) => { log += d; });
   const stop = () => {
     try { child.kill('SIGKILL'); } catch { /* gone */ }
-    a.close(); b.close(); c.closeAllConnections(); c.close();
+    a.close(); b.close(); c.closeAllConnections(); c.close(); e.close();
     fs.rmSync(dir, { recursive: true, force: true });
   };
 
@@ -190,8 +197,8 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   }
 
   console.log('\n/api/peers');
-  check('four peers configured; the URL and the path entries are ignored',
-    peers.map((p) => p.name).join() === '3335,3339,dead,slow', peers.map((p) => p.name).join());
+  check('five peers configured; the URL and the path entries are ignored',
+    peers.map((p) => p.name).join() === '3335,3339,dead,slow,broken', peers.map((p) => p.name).join());
   check('and the log says so', /ignoring "evil=/.test(log) && /ignoring "bad=/.test(log), log.slice(0, 600));
   const [p1, p2, p3] = peers;
   check('the 1.9.0 peer is read with all four coins',
@@ -203,6 +210,9 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   check('the dead one is shown as not answering', p3.ok === false && !!p3.error, JSON.stringify(p3));
   const p4 = peers[3];
   check('a peer trickling one byte a second is cut off at the deadline', p4.ok === false && /timed out/.test(p4.error || ''), JSON.stringify(p4));
+  check('a peer whose answer is JSON but not a status fails on its own',
+    peers[4].ok === false && peers[4].error === 'not a pool status', JSON.stringify(peers[4]));
+  check('and the good peers are still read next to it', p1.ok && p2.ok);
   const alive = await fetch(`${BASE}/health`).then((r) => r.status).catch(() => 0);
   check('and the process survives it', alive === 200 || alive === 503, String(alive));
   check('worker counts per peer', p1.status.workerCount === 1 && p2.status.workerCount === 2);
@@ -254,6 +264,14 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   }
   const dead = await fetch(`${BASE}/api/peer-worker?peer=2&name=rig1`);
   check('a peer that does not answer is a 404 with the reason', dead.status === 404 && !!(await dead.json()).error, String(dead.status));
+  // Six at once against the peer that trickles: four are let through, and
+  // the rest are refused straight away instead of piling up connections.
+  const burst = await Promise.all([...Array(6)].map(() =>
+    fetch(`${BASE}/api/peer-worker?peer=3&name=rig1`).then((r) => r.status).catch(() => 0)));
+  check('more than four at once are refused, not queued', burst.filter((x) => x === 503).length === 2 &&
+    burst.filter((x) => x === 404).length === 4, burst.join());
+  const afterBurst = await fetch(`${BASE}/api/peer-worker?peer=0&name=${encodeURIComponent(WORKER_HISTORY.name)}`);
+  check('and once they are done, the next one is answered', afterBurst.status === 200, String(afterBurst.status));
 
   console.log('\nwidgets add the ports up');
   const hrw = await (await fetch(`${BASE}/api/widget/hashrate`)).json();

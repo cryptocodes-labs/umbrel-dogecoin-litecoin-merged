@@ -1017,7 +1017,9 @@ function payoutOf(src, w){
   for(const c of chainsOf(src.s)){
     if(c.payoutAddress && c.payoutMode !== 'miner') out[c.name] = c.payoutAddress;
   }
-  if(!out.DOGE && w.payoutAddress) out.DOGE = w.payoutAddress;
+  // The address the pool actually pays this worker's Dogecoin block to. On an
+  // unlocked port that is the one in its username, not the app's own.
+  if(w.payoutAddress) out.DOGE = w.payoutAddress;
   return out;
 }
 // A worker that is gone has no connection to read its addresses from. On a
@@ -1084,9 +1086,12 @@ function minerRow(m){
   const tags = '<span class="tag">' + esc(port) + '</span>' +
     (w.entry === 'rented' ? ' <span class="tag">rented port</span>' : '') +
     (gone ? ' <span class="tag bad">offline</span>' : '');
+  // Difficulty for every live miner; the ping only where it was measured,
+  // which is this port — a peer does not pass its miners' round trips on.
   const sub = gone
     ? 'last seen ' + since(w.lastSeen) + ' ago'
-    : [w.userAgent || (m.src.peer === '' ? w.remote : ''), w.connectedAt ? 'up ' + since(w.connectedAt) : '']
+    : [w.userAgent || (m.src.peer === '' ? w.remote : ''), w.connectedAt ? 'up ' + since(w.connectedAt) : '',
+        w.difficulty ? 'diff ' + compact(w.difficulty) : '', m.src.peer === '' && w.latencyMs != null ? pingText(w, true) : '']
         .filter(Boolean).join(' · ');
   return '<tr class="wrow' + (gone ? ' gone' : '') + '" tabindex="0" role="button" data-worker="' + esc(w.worker) +
       '" data-peer="' + esc(m.src.peer) + '">' +
@@ -1249,8 +1254,12 @@ function workerHealth(w, own = true){
   // Its own 24-hour average, from the status where the pool sends one; this
   // port's history is the fallback for an older peer that does not. Never
   // another port's worker against this port's history: names can repeat.
+  // The mean of the minutes it was actually connected (history's avg24h), not
+  // the window average that counts its absence as zero: "running at half its
+  // usual rate" is about the machine, not about how long it was away. Only a
+  // peer's worker, whose minutes are not here, falls back to the window.
   const hist = own && history.workers && history.workers[w.worker];
-  const avg = (w.avg && w.avg.h24) || (hist && hist.avg24h);
+  const avg = (hist && hist.avg24h) || (w.avg && w.avg.h24);
   if(avg > 0 && w.hashrate > 0 && w.hashrate < avg * 0.5){
     return { level: 'warn', text: 'running at ' + Math.round((w.hashrate/avg)*100) + '% of its own 24h average' };
   }
