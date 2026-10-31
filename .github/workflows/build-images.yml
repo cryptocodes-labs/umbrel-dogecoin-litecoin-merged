@@ -84,7 +84,24 @@ jobs:
         id: owner
         run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
+      # A published version is never rebuilt. Every push to main used to build
+      # and push every image again under its existing tag, so the image behind
+      # a version changed whenever Debian moved a package — while the compose
+      # files pin each image by digest, and an app installed later must get
+      # exactly the bytes that were tested. A change ships under a new tag.
+      - name: Is this version already published?
+        id: published
+        run: |
+          ref="${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ matrix.name }}:${{ matrix.tag }}"
+          if docker buildx imagetools inspect "${ref}" >/dev/null 2>&1; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${ref} is already published and is left exactly as it is. Raise the tag to publish a change."
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
+        if: steps.published.outputs.value != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ matrix.context }}
@@ -111,7 +128,7 @@ jobs:
       # passed through to docker untouched.
       - name: Show the digest to pin
         run: |
-          echo "Pin this in docker-compose.yml before sharing the store widely:"
+          echo "The digest docker-compose.yml must pin for this tag:"
           docker buildx imagetools inspect \
             "${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ matrix.name }}:${{ matrix.tag }}" \
             --format '{{.Manifest.Digest}}'

@@ -146,6 +146,13 @@ jobs:
       - name: Manifest validation
         run: python3 test/validate_manifest.py
 
+      # Every image an app uses is pinned by digest, and the registry serves
+      # exactly that digest for the tag: an app installed later gets the bytes
+      # that were tested, and a re-pushed tag fails here instead of changing
+      # quietly on an Umbrel.
+      - name: Image digests match the registry
+        run: bash ./test/image_pins.sh
+
       # Against a real dogecoind, because the claims the aux longpoll rests on
       # are claims about Dogecoin Core, not about our code: that a
       # getblocktemplate longpoll wakes on a tip change, that createauxblock

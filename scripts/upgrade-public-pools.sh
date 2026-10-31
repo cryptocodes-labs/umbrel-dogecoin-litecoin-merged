@@ -1,0 +1,54 @@
+#!/bin/bash
+#
+# Moves the public (3335) and rented (3339) LTC + DOGE containers to a new
+# stratum image with exactly the settings, ports and data they run with now.
+# Run on the Umbrel: bash ~/upgrade-public-pools.sh
+#
+# The image is the one CI tested and published, pinned by digest (the same as
+# doge-dogecoin-solo/docker-compose.yml). Per container: the current settings
+# are saved, the new container is started, and if the pool does not answer
+# within 60 s the old image is started again. The rented port goes first; the
+# public one is only touched when that worked.
+#
+set -uo pipefail
+NEW=ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.9.1@sha256:eb5d433d982b7199f0dcfee903ed2fa18cf87aa94dc010bf2bdf88048540830c
+STAMP=$(date +%Y%m%d-%H%M%S)
+echo "== pulling $NEW"
+sudo docker pull -q "$NEW" || { echo "pull failed; nothing changed"; exit 1; }
+
+upgrade() {
+  local c="$1" dir="$2" sport="$3" wport="$4"
+  echo; echo "== $c"
+  sudo docker inspect "$c" > "$dir/inspect-before-upgrade-$STAMP.json" || { echo "container $c not found"; return 1; }
+  local old net
+  old=$(sudo docker inspect "$c" --format "{{.Config.Image}}")
+  net=$(sudo docker inspect "$c" --format "{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}" | awk "{print \$1}")
+  # The running container's environment, minus what the image itself sets.
+  local envf="$dir/env-$STAMP"
+  sudo sh -c "umask 077; docker inspect $c --format \"{{range .Config.Env}}{{println .}}{{end}}\" | grep -vE \"^(PATH|NODE_VERSION|YARN_VERSION|NODE_ENV)=\" | grep -v \"^\$\" > $envf"
+  echo "old image: $old  network: $net  ports: $sport (stratum) $wport (dashboard)"
+  run() {
+    sudo docker run -d --name "$c" --restart unless-stopped --network "$net" \
+      -p "$sport:3333" -p "$wport:3000" --env-file "$envf" -v "$dir/data:/data" \
+      --read-only --tmpfs /tmp:size=8m --security-opt no-new-privileges:true \
+      --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID "$1" >/dev/null
+  }
+  sudo docker rm -f "$c" >/dev/null
+  if ! run "$NEW"; then echo "start failed, back to $old"; run "$old"; return 1; fi
+  for i in $(seq 1 30); do
+    sleep 2
+    if curl -s -m 3 "http://127.0.0.1:$wport/api/status" | grep -q "\"ok\":true"; then
+      echo "OK: $c runs the new image and answers (after $((i*2)) s)"
+      sudo docker logs "$c" 2>&1 | grep -E "PUBLIC merged|Pepecoin|Soqucoin|stratum listening|new merged job" | tail -5
+      return 0
+    fi
+  done
+  echo "NO answer within 60 s; back to $old"
+  sudo docker logs "$c" 2>&1 | tail -15
+  sudo docker rm -f "$c" >/dev/null; run "$old"
+  return 1
+}
+
+upgrade doge-public-rental "$HOME/doge-public-rental" 22562 22563 || { echo "rented port failed; doge-public not touched"; exit 1; }
+upgrade doge-public "$HOME/doge-public" 22559 22561 || exit 1
+echo; echo "== done: both ports run the new image"
