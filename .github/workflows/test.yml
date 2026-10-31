@@ -99,6 +99,9 @@ jobs:
       - name: Which workers mine Pepecoin, per the status snapshot
         run: node test/pep_snapshot_unit.js
 
+      - name: Every miner's averages over an hour, a day and a week
+        run: node test/miner_averages.js
+
       - name: Node alarm state machine
         run: node test/health.js
 

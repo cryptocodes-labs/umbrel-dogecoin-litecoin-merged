@@ -729,6 +729,65 @@ function parsePeerPools(raw) {
   return out.slice(0, 8);
 }
 
+// A peer's workers, for the dashboard's table of every miner on this Umbrel.
+// What a miner put in its username travels — its name, and the addresses it is
+// paid at, which the table groups by. What the connection says about the
+// machine does not: no IP address leaves the container that saw it. Every
+// field is re-typed here, so a peer cannot hand the page anything the page
+// does not expect; names are escaped again where they are drawn. A worker of
+// an older peer simply has no averages.
+const PEER_WORKERS = 200;
+// One detail panel asks one peer at a time; a few at once is a person with
+// several tabs. Each costs an outgoing connection and up to PEER_MAX_BYTES of
+// memory, so more than this at once is refused rather than queued.
+const PEER_WORKER_CONCURRENCY = 4;
+let peerWorkerInFlight = 0;
+const PEER_OFFLINE_WORKERS = 20;
+const ADDRESS_RE = /^[A-Za-z0-9]{20,100}$/;
+const peerNum = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+const peerOpt = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+const peerText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+const peerAddress = (v) => (typeof v === 'string' && ADDRESS_RE.test(v) ? v : null);
+function peerAverages(a) {
+  return a && typeof a === 'object' ? { h1: peerOpt(a.h1), h24: peerOpt(a.h24), d7: peerOpt(a.d7) } : null;
+}
+function trimPeerWorker(w) {
+  return {
+    worker: peerText(w.worker, 64),
+    entry: w.entry === 'rented' ? 'rented' : 'primary',
+    userAgent: peerText(w.userAgent, 64),
+    hashrate: peerNum(w.hashrate),
+    difficulty: peerNum(w.difficulty),
+    accepted: Math.floor(peerNum(w.accepted)),
+    rejected: Math.floor(peerNum(w.rejected)),
+    bestShareDiff: peerNum(w.bestShareDiff),
+    bestEverDiff: peerNum(w.bestEverDiff),
+    totalAccepted: peerOpt(w.totalAccepted),
+    connectedAt: peerOpt(w.connectedAt),
+    lastShareAt: peerOpt(w.lastShareAt),
+    firstSeen: peerOpt(w.firstSeen),
+    payoutAddress: peerAddress(w.payoutAddress),
+    ltcPayoutAddress: peerAddress(w.ltcPayoutAddress),
+    pepPayoutAddress: peerAddress(w.pepPayoutAddress),
+    avg: peerAverages(w.avg),
+    shareHistory: (Array.isArray(w.shareHistory) ? w.shareHistory : [])
+      .filter((t) => typeof t === 'number' && Number.isFinite(t)).slice(-48),
+  };
+}
+function trimPeerOfflineWorker(w) {
+  return {
+    worker: peerText(w.worker, 64),
+    accepted: Math.floor(peerNum(w.accepted)),
+    rejected: Math.floor(peerNum(w.rejected)),
+    bestShareDiff: peerNum(w.bestShareDiff),
+    bestShareAt: peerOpt(w.bestShareAt),
+    firstSeen: peerOpt(w.firstSeen),
+    lastSeen: peerOpt(w.lastSeen),
+    avg: peerAverages(w.avg),
+  };
+}
+const objects = (v, max) => (Array.isArray(v) ? v : []).filter((x) => x && typeof x === 'object').slice(0, max);
+
 // The figures of a peer's status that the dashboard and widgets use. A 1.8.x
 // peer has no `chains`; its Litecoin and Dogecoin difficulties are still in
 // the status under their older names.
@@ -741,7 +800,7 @@ function trimPeerStatus(s) {
     }
     if (s.networkDifficulty) chains.push({ name: 'DOGE', label: 'Dogecoin', height: s.height, difficulty: s.networkDifficulty });
   }
-  chains = chains.slice(0, 8).map((c) => ({
+  chains = chains.filter((c) => c && typeof c === 'object').slice(0, 8).map((c) => ({
     name: String(c.name || '').slice(0, 8),
     label: String(c.label || c.name || '').slice(0, 24),
     height: num(c.height),
@@ -753,6 +812,10 @@ function trimPeerStatus(s) {
     ...(typeof c.hashrate === 'number' && Number.isFinite(c.hashrate) ? { hashrate: c.hashrate } : {}),
     ...(typeof c.reward === 'number' && Number.isFinite(c.reward) ? { reward: c.reward } : {}),
     ...(typeof c.blockSeconds === 'number' && Number.isFinite(c.blockSeconds) ? { blockSeconds: c.blockSeconds } : {}),
+    // Who a block on this chain pays, so the miners of a private peer can be
+    // grouped under its addresses as this port's are.
+    ...(peerAddress(c.payoutAddress) ? { payoutAddress: c.payoutAddress } : {}),
+    ...(c.payoutMode === 'pool' || c.payoutMode === 'miner' ? { payoutMode: c.payoutMode } : {}),
   }));
   return {
     totalHashrate: num(s.totalHashrate),
@@ -762,10 +825,42 @@ function trimPeerStatus(s) {
     bestShareAt: num(s.bestShareAt) || null,
     blocksFound: num(s.blocksFound),
     chains,
+    // Whether its miners name their own addresses: the dashboard groups them
+    // by those, and a gone one by the Dogecoin address in its name.
+    publicMerged: s.publicMerged === true,
+    workers: objects(s.workers, PEER_WORKERS).map(trimPeerWorker),
+    offlineWorkers: objects(s.offlineWorkers, PEER_OFFLINE_WORKERS).map(trimPeerOfflineWorker),
   };
 }
 
-function fetchPeerStatus(peer) {
+// One worker's stored history from a peer (its /api/worker), re-typed the
+// same way: the totals, the reject reasons and a day of minute samples.
+function trimPeerWorkerHistory(w) {
+  // Null-prototype, like the store's own maps: a reason a peer calls
+  // "__proto__" is then just a key.
+  const reasons = Object.create(null);
+  for (const [k, v] of Object.entries(w.rejectReasons && typeof w.rejectReasons === 'object' ? w.rejectReasons : {}).slice(0, 20)) {
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) reasons[k.slice(0, 64)] = Math.floor(v);
+  }
+  return {
+    accepted: Math.floor(peerNum(w.accepted)),
+    rejected: Math.floor(peerNum(w.rejected)),
+    bestShareDiff: peerNum(w.bestShareDiff),
+    bestShareAt: peerOpt(w.bestShareAt),
+    firstSeen: peerOpt(w.firstSeen),
+    lastSeen: peerOpt(w.lastSeen),
+    work: peerNum(w.work),
+    rejectReasons: reasons,
+    // Filtered before it is cut, so junk at the end cannot shorten the day.
+    samples: (Array.isArray(w.samples) ? w.samples : [])
+      .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+      .slice(-1440)
+      .map((p) => [p[0], p[1]]),
+  };
+}
+
+// One JSON answer from a peer: { ok, body } or { ok: false, error }.
+function fetchPeerJson(peer, path) {
   return new Promise((settle) => {
     // One answer per request, and a deadline for the WHOLE exchange: the
     // socket timeout alone only fires after a silence, so a peer trickling a
@@ -782,7 +877,7 @@ function fetchPeerStatus(peer) {
       {
         host: peer.host,
         port: peer.port,
-        path: '/api/status',
+        path,
         timeout: PEER_TIMEOUT_MS,
         headers: { Accept: 'application/json' },
         // A name another container on the shared network also answers to is
@@ -812,10 +907,9 @@ function fetchPeerStatus(peer) {
         });
         res.on('end', () => {
           try {
-            const s = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            resolve(s && s.ok ? { ok: true, status: trimPeerStatus(s) } : { ok: false, error: 'pool not running' });
+            resolve({ ok: true, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
           } catch {
-            resolve({ ok: false, error: 'not a pool status' });
+            resolve({ ok: false, error: 'not JSON' });
           }
         });
       }
@@ -826,6 +920,21 @@ function fetchPeerStatus(peer) {
     // whose message is empty; its code (ECONNREFUSED, ENOTFOUND) is the reason.
     req.on('error', (err) => resolve({ ok: false, error: err.message || err.code || 'unreachable' }));
   });
+}
+
+async function fetchPeerStatus(peer) {
+  const r = await fetchPeerJson(peer, '/api/status');
+  if (!r.ok) return { ok: false, error: r.error === 'not JSON' ? 'not a pool status' : r.error };
+  const s = r.body;
+  if (!s || typeof s !== 'object' || !s.ok) return { ok: false, error: 'pool not running' };
+  // An answer that is JSON but not shaped like a status must fail THIS peer
+  // only. Thrown out of here it would reject pollPeers' Promise.all, and no
+  // peer would ever be read again — the last good figures frozen as "ok".
+  try {
+    return { ok: true, status: trimPeerStatus(s) };
+  } catch {
+    return { ok: false, error: 'not a pool status' };
+  }
 }
 
 const peerPools = parsePeerPools(process.env.PEER_POOLS);
@@ -1009,7 +1118,7 @@ const server = http.createServer((req, res) => {
         // /api/worker when the detail panel is actually shown.
         workers: Object.fromEntries(
           Object.entries(s.workers).map(([name, w]) => {
-            const { samples, ...rest } = w;
+            const { samples, hours, ...rest } = w;
             const list = Array.isArray(samples) ? samples : [];
             // The one number the summary view needs from the series: this
             // worker's own 24-hour mean, which is what "it is running at half
@@ -1159,6 +1268,40 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/peers') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ peers: peerResults }));
+    return;
+  }
+
+  // One worker's own history on another port, for the detail panel: the same
+  // as /api/worker, asked of the pool container that holds it. Only a
+  // configured peer can be asked, by its place in PEER_POOLS, and only for a
+  // worker name; the answer is re-typed before it is passed on.
+  if (url.pathname === '/api/peer-worker') {
+    if (peerWorkerInFlight >= PEER_WORKER_CONCURRENCY) {
+      res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '2' });
+      res.end(JSON.stringify({ ok: false, error: 'busy' }));
+      return;
+    }
+    const index = Number(url.searchParams.get('peer'));
+    const name = url.searchParams.get('name') || '';
+    const peer = Number.isInteger(index) && index >= 0 && index < peerPools.length ? peerPools[index] : null;
+    const answer = (status, body) => {
+      res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
+    };
+    if (!peer || !name || name.length > 64) {
+      answer(400, { ok: false, error: 'unknown worker' });
+      return;
+    }
+    peerWorkerInFlight++;
+    fetchPeerJson(peer, `/api/worker?name=${encodeURIComponent(name)}`).then((r) => {
+      const w = r.ok && r.body && r.body.ok && r.body.worker && typeof r.body.worker === 'object' ? r.body.worker : null;
+      if (!w) answer(404, { ok: false, error: r.ok ? 'unknown worker' : r.error });
+      else answer(200, { ok: true, name, peer: peer.name, worker: trimPeerWorkerHistory(w) });
+    }).catch(() => {
+      if (!res.headersSent) answer(502, { ok: false, error: 'not a worker history' });
+      else res.destroy();
+    })
+      .finally(() => { peerWorkerInFlight--; });
     return;
   }
 

@@ -245,6 +245,36 @@ td.num{font-family:var(--mono);font-size:13.5px}
 .wrow:focus-visible{outline:2px solid var(--gold);outline-offset:-2px}
 .unit{font:11.5px/1.5 var(--mono);color:var(--dimmer)}
 
+/* ---------- every miner on every port ----------
+   One table for the whole Umbrel, so the columns line up from one payout
+   group to the next; each group opens with the addresses it is paid at, in
+   the coins' own colours. A miner that dropped out stays, dimmed. */
+.mtab tbody.mgroup tr.ghead td{border-top:1px solid var(--line);padding:18px 0 10px}
+.mtab tbody.mgroup:first-of-type tr.ghead td{padding-top:6px}
+.ghead .k{font:10px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--dimmer);margin-right:14px}
+.paycoin{display:inline-block;font:12px/1.8 var(--mono);color:var(--dim);white-space:nowrap;margin-right:16px}
+.paycoin i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--c);margin-right:6px;vertical-align:1px}
+.paycoin a{color:var(--cream);text-decoration:none;border-bottom:1px solid var(--line)}
+.paycoin a:hover{border-bottom-color:var(--c)}
+.wrow.gone td{color:var(--dimmer)}
+.wrow.gone .wname{color:var(--dim)}
+.mtab .tot td{font-size:12.5px}
+.mtab th{white-space:nowrap}
+.mtab td.num{white-space:nowrap}
+/* Right-aligned figures side by side need air between them: the shared table
+   rule gives right-aligned cells no padding on the right, so it goes left. */
+.mtab th.r,.mtab td.r{padding-left:16px}
+.mtab .wname .at{color:var(--dimmer)}
+/* Break between words where it can: a user agent cut mid-word reads as two. */
+.mtab .wsub,.mtab .wmeta,.mtab .wmid{word-break:normal;overflow-wrap:anywhere}
+/* Columns leave in order of how much they add: the activity bars and this
+   connection's best first, then the week and the share count — which move to
+   a line under the name — and at phone width everything but now and last. */
+.wmid{display:none;font:11.5px/1.5 var(--mono);color:var(--dim);margin-top:4px}
+@media (max-width:1100px){ th.wide,td.wide{display:none} }
+@media (max-width:900px){ th.mid,td.mid{display:none} .wmid{display:block} }
+@media (max-width:640px){ .wmid{display:none} }
+
 .spark{display:flex;align-items:flex-end;gap:2px;height:22px;min-width:90px}
 .spark i{flex:1;min-width:2px;background:var(--gold-dim);border-radius:1px;display:block;height:2px}
 .spark i.fresh{background:var(--gold)}
@@ -412,7 +442,7 @@ footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);
     <div class="cnote" id="shareChartNote"></div>
   </div>
 
-  <h2>Workers</h2>
+  <h2>Miners <span class="aside" id="minersNote"></span></h2>
   <div id="workers"></div>
 
   <!-- Detail for one worker. Hidden until a row is chosen; its history is
@@ -786,24 +816,28 @@ document.addEventListener('click', (e) => {
 // out of the DOM so the panel refreshes in place on the next poll instead of
 // freezing at the numbers it was opened with.
 let openWorker = null;
+// And on which port: '' for this app, otherwise the peer's place in /api/peers.
+let openPeer = '';
 
 document.addEventListener('click', (e) => {
   if(e.target.closest('#wdClose')){ closeWorker(); return; }
   const row = e.target.closest('.wrow');
-  // A click on the copy button inside a row must not also open the panel.
-  if(row && !e.target.closest('button')) openWorkerPanel(row.getAttribute('data-worker'));
+  // A click on the copy button or an address link inside a row must not also
+  // open the panel.
+  if(row && !e.target.closest('button,a')) openWorkerPanel(row.getAttribute('data-worker'), row.getAttribute('data-peer') || '');
 });
 document.addEventListener('keydown', (e) => {
   if(e.key === 'Escape' && openWorker){ closeWorker(); return; }
   const row = e.target && e.target.closest ? e.target.closest('.wrow') : null;
   if(row && (e.key === 'Enter' || e.key === ' ')){
     e.preventDefault();
-    openWorkerPanel(row.getAttribute('data-worker'));
+    openWorkerPanel(row.getAttribute('data-worker'), row.getAttribute('data-peer') || '');
   }
 });
 
 function closeWorker(){
   openWorker = null;
+  openPeer = '';
   $('wdetail').hidden = true;
 }
 
@@ -812,9 +846,10 @@ function closeWorker(){
 // with the wrong worker's shares under the right worker's name.
 let workerRequest = 0;
 
-async function openWorkerPanel(name){
+async function openWorkerPanel(name, peer = ''){
   if(!name) return;
   openWorker = name;
+  openPeer = peer;
   $('wdetail').hidden = false;
   $('wdName').textContent = name;
   $('wdetail').scrollIntoView({block:'nearest'});
@@ -822,22 +857,31 @@ async function openWorkerPanel(name){
 }
 
 async function refreshWorkerPanel(){
-  const name = openWorker;
+  const name = openWorker, peer = openPeer;
   if(!name) return;
   const ticket = ++workerRequest;
   let data = null;
   try{
-    const res = await fetch('/api/worker?name=' + encodeURIComponent(name), {cache:'no-store'});
+    // A miner on another port: its pool holds the history, and this app asks
+    // it on the browser's behalf.
+    const url = peer === ''
+      ? '/api/worker?name=' + encodeURIComponent(name)
+      : '/api/peer-worker?peer=' + encodeURIComponent(peer) + '&name=' + encodeURIComponent(name);
+    const res = await fetch(url, {cache:'no-store'});
     if(res.ok) data = await res.json();
   }catch(e){ /* handled below */ }
   // Someone clicked another worker while this was in flight, or closed the
   // panel. Whatever is on screen now is newer than what this call returned.
-  if(ticket !== workerRequest || openWorker !== name) return;
+  if(ticket !== workerRequest || openWorker !== name || openPeer !== peer) return;
 
   // Still show what the live status knows, even if the stored history for this
   // name has not been written yet — a worker that connected a minute ago has a
   // row in the table but no file entry.
-  const live = (lastStatus && lastStatus.workers || []).find((w) => w.worker === name) || null;
+  const src = peer === '' ? lastStatus
+    : ((lastPeers && lastPeers.peers && lastPeers.peers[Number(peer)]) || {}).status;
+  const portName = peer === '' ? 'this app'
+    : ((lastPeers && lastPeers.peers && lastPeers.peers[Number(peer)]) || {}).name || 'another port';
+  const live = (src && src.workers || []).find((w) => w.worker === name) || null;
   const stored = data && data.ok ? data.worker : null;
 
   if(!live && !stored){
@@ -850,8 +894,8 @@ async function refreshWorkerPanel(){
   }
 
   $('wdSub').textContent = live
-    ? [live.userAgent, live.remote, 'paying ' + (live.payoutAddress || '—')].filter(Boolean).join(' · ')
-    : 'not connected right now';
+    ? [portName, live.userAgent, live.remote, 'paying ' + (live.payoutAddress || '—')].filter(Boolean).join(' · ')
+    : portName + ' · not connected right now';
 
   const best = Math.max(live ? live.bestShareDiff || 0 : 0, stored ? stored.bestShareDiff || 0 : 0);
   const netDiff = lastStatus ? (lastStatus.smoothedDifficulty || lastStatus.networkDifficulty) : 0;
@@ -947,6 +991,229 @@ function sparkline(history, windowMs){
   return html + '</div>';
 }
 
+/* ---------- every miner on every port ---------- */
+// One table for the whole Umbrel, the way the BTC and BCH pools show theirs:
+// grouped by who gets paid, each miner with its port, its averages over an
+// hour, a day and a week, its best share on this connection and ever, and the
+// miners that dropped out in the last week. This port's workers arrive with
+// every status poll; the other ports' from /api/peers, every 15 seconds.
+const PAY_COINS = ['LTC', 'DOGE', 'PEP', 'SOQ'];
+
+function minerSources(d){
+  const out = [{ label: 'this app', peer: '', s: d }];
+  const peers = lastPeers && Array.isArray(lastPeers.peers) ? lastPeers.peers : [];
+  peers.forEach((p, i) => { if(p && p.ok && p.status) out.push({ label: p.name, peer: String(i), s: p.status }); });
+  return out;
+}
+
+// The addresses a worker is paid at. A public miner names its own in its
+// username; on a private port every share pays the pool's addresses, which
+// the status lists per coin.
+function payoutOf(src, w){
+  if(w.ltcPayoutAddress){
+    return { LTC: w.ltcPayoutAddress, DOGE: w.payoutAddress || null, PEP: w.pepPayoutAddress || null };
+  }
+  const out = {};
+  for(const c of chainsOf(src.s)){
+    if(c.payoutAddress && c.payoutMode !== 'miner') out[c.name] = c.payoutAddress;
+  }
+  // The address the pool actually pays this worker's Dogecoin block to. On an
+  // unlocked port that is the one in its username, not the app's own.
+  if(w.payoutAddress) out.DOGE = w.payoutAddress;
+  return out;
+}
+// A worker that is gone has no connection to read its addresses from. On a
+// public port its name is "rig@<Dogecoin address>" (or the address alone); on
+// a private one it was paid what the pool pays.
+function offlinePayout(src, name){
+  if(src.s.publicMerged){
+    const n = String(name);
+    return { DOGE: n.slice(n.lastIndexOf('@') + 1) || null };
+  }
+  return payoutOf(src, {});
+}
+
+function shortAddress(a){
+  const s = String(a);
+  return s.length > 20 ? s.slice(0, 7) + '…' + s.slice(-6) : s;
+}
+function payChip(coin, address){
+  const url = EXPLORER[coin];
+  const cls = { LTC: 'c-ltc', DOGE: 'c-doge', PEP: 'c-pep', SOQ: 'c-soq' }[coin] || 'c-other';
+  const body = url
+    ? '<a href="' + esc(url + encodeURIComponent(address)) + '" target="_blank" rel="noopener noreferrer" title="' +
+      esc(address) + '">' + esc(shortAddress(address)) + '&nbsp;↗</a>'
+    : esc(shortAddress(address));
+  return '<span class="paycoin ' + cls + '"><i></i>' + coin + ' ' + body + '</span>';
+}
+
+function hrCell(v){
+  if(v == null || !isFinite(v)) return '<span class="unit">—</span>';
+  const h = hashrate(v);
+  return h.n + ' <span class="unit">' + h.u + '</span>';
+}
+// Plain text for the lines under a name; the number keeps its unit on a
+// narrow screen.
+function hrPlain(v){
+  if(v == null || !isFinite(v)) return '—';
+  const h = hashrate(v);
+  return h.n + '\u00a0' + h.u;
+}
+// A sum over workers of a figure that some of them may not have yet (an older
+// pool, or a miner with less than ten minutes of history): the known ones,
+// or a dash when none is known.
+function sumKnown(values){
+  const known = values.filter((v) => v != null && isFinite(v));
+  return known.length ? known.reduce((a, b) => a + b, 0) : null;
+}
+
+// "rig@<Dogecoin address>": the rig in full, the address — already in the
+// group's heading — short and dimmed. Any other long name loses its middle.
+function minerName(name){
+  const n = String(name), at = n.lastIndexOf('@');
+  if(at > 0) return esc(n.slice(0, at)) + '<span class="at">@' + esc(shortAddress(n.slice(at + 1))) + '</span>';
+  return esc(n.length > 30 ? n.slice(0, 14) + '…' + n.slice(-10) : n);
+}
+
+function minerRow(m){
+  const w = m.w, gone = m.gone, a = w.avg || {};
+  const ever = gone ? w.bestShareDiff : (w.bestEverDiff || w.bestShareDiff || 0);
+  const shares = gone ? w.accepted : (w.totalAccepted != null ? w.totalAccepted : w.accepted);
+  const last = gone ? w.lastSeen : w.lastShareAt;
+  const idle = !gone && (!w.lastShareAt || Date.now() - w.lastShareAt > 300000);
+  const health = gone ? { level: 'ok' } : workerHealth(w, m.src.peer === '');
+  const port = m.src.peer === '' ? 'this app' : m.src.label;
+  const tags = '<span class="tag">' + esc(port) + '</span>' +
+    (w.entry === 'rented' ? ' <span class="tag">rented port</span>' : '') +
+    (gone ? ' <span class="tag bad">offline</span>' : '');
+  // Difficulty for every live miner; the ping only where it was measured,
+  // which is this port — a peer does not pass its miners' round trips on.
+  const sub = gone
+    ? 'last seen ' + since(w.lastSeen) + ' ago'
+    : [w.userAgent || (m.src.peer === '' ? w.remote : ''), w.connectedAt ? 'up ' + since(w.connectedAt) : '',
+        w.difficulty ? 'diff ' + compact(w.difficulty) : '', m.src.peer === '' && w.latencyMs != null ? pingText(w, true) : '']
+        .filter(Boolean).join(' · ');
+  return '<tr class="wrow' + (gone ? ' gone' : '') + '" tabindex="0" role="button" data-worker="' + esc(w.worker) +
+      '" data-peer="' + esc(m.src.peer) + '">' +
+    '<td><div class="wname" title="' + esc(w.worker) + '">' + minerName(w.worker) + '</div>' +
+      '<div class="wsub">' + tags + ' ' + esc(sub) + '</div>' +
+      '<div class="wmid">7\u00a0d ' + hrPlain(a.d7) + ' · ' + count(shares) + '\u00a0shares</div>' +
+      // Phone-only line: below 640px the averages and shares have no column.
+      '<div class="wmeta">1\u00a0h ' + hrPlain(a.h1) + ' · 24\u00a0h ' + hrPlain(a.h24) + ' · 7\u00a0d ' + hrPlain(a.d7) +
+        ' · best\u00a0ever ' + compact(ever || 0) + ' · ' + count(shares) + '\u00a0shares</div>' +
+      (health.level !== 'ok' ? '<div class="wwarn ' + health.level + '">' + esc(health.text) + '</div>' : '') +
+    '</td>' +
+    '<td class="wide hide">' + sparkline(gone ? [] : w.shareHistory, 10*60*1000) + '</td>' +
+    '<td class="num r">' + hrCell(gone ? 0 : w.hashrate) + '</td>' +
+    '<td class="num r hide">' + hrCell(a.h1) + '</td>' +
+    '<td class="num r hide">' + hrCell(a.h24) + '</td>' +
+    '<td class="num r mid hide">' + hrCell(a.d7) + '</td>' +
+    '<td class="num r wide hide">' + (gone ? '<span class="unit">—</span>' : compact(w.bestShareDiff || 0)) + '</td>' +
+    '<td class="num r hide">' + compact(ever || 0) + '</td>' +
+    '<td class="num r mid hide">' + count(shares) +
+      (!gone && w.rejected ? ' <span class="tag bad">' + count(w.rejected) + '</span>' : '') + '</td>' +
+    '<td class="num r">' + (idle || gone ? '<span class="tag bad">' + since(last) + '</span>' : since(last)) + '</td>' +
+  '</tr>';
+}
+
+function totalRow(label, ms){
+  const on = ms.filter((m) => !m.gone);
+  const pick = (k) => sumKnown(ms.map((m) => (m.w.avg || {})[k]));
+  const ever = Math.max(0, ...ms.map((m) => m.gone ? m.w.bestShareDiff || 0 : m.w.bestEverDiff || m.w.bestShareDiff || 0));
+  const best = Math.max(0, ...on.map((m) => m.w.bestShareDiff || 0));
+  const shares = ms.reduce((t, m) => t + ((m.gone ? m.w.accepted : (m.w.totalAccepted != null ? m.w.totalAccepted : m.w.accepted)) || 0), 0);
+  return '<tr class="tot"><td>' + esc(label) + '</td><td class="wide hide"></td>' +
+    '<td class="num r">' + hrCell(on.reduce((t, m) => t + (m.w.hashrate || 0), 0)) + '</td>' +
+    '<td class="num r hide">' + hrCell(pick('h1')) + '</td>' +
+    '<td class="num r hide">' + hrCell(pick('h24')) + '</td>' +
+    '<td class="num r mid hide">' + hrCell(pick('d7')) + '</td>' +
+    '<td class="num r wide hide">' + compact(best) + '</td>' +
+    '<td class="num r hide">' + compact(ever) + '</td>' +
+    '<td class="num r mid hide">' + count(shares) + '</td><td class="r"></td></tr>';
+}
+
+function renderMiners(d){
+  const sources = minerSources(d);
+  const groups = new Map();
+  const keyOf = (pay) => ['LTC', 'DOGE', 'PEP'].map((c) => pay[c] || '').join('|');
+  const groupFor = (key, pay) => {
+    if(!groups.has(key)) groups.set(key, { pay: {}, miners: [] });
+    const g = groups.get(key);
+    for(const c of PAY_COINS) if(pay[c] && !g.pay[c]) g.pay[c] = pay[c];
+    return g;
+  };
+  for(const src of sources){
+    for(const w of src.s.workers || []){
+      const pay = payoutOf(src, w);
+      groupFor(keyOf(pay), pay).miners.push({ src, w, gone: false });
+    }
+  }
+  // A miner that is gone joins the group paid at the same Dogecoin address —
+  // the one address every port can still tell from its name.
+  for(const src of sources){
+    for(const w of src.s.offlineWorkers || []){
+      const pay = offlinePayout(src, w.worker);
+      const match = [...groups.values()].find((g) => pay.DOGE && g.pay.DOGE === pay.DOGE);
+      (match || groupFor(keyOf(pay), pay)).miners.push({ src, w, gone: true });
+    }
+  }
+
+  const all = [...groups.values()].flatMap((g) => g.miners);
+  const online = all.filter((m) => !m.gone).length;
+  const gone = all.length - online;
+  $('minersNote').textContent = sources.length > 1
+    ? online + ' online' + (gone ? ' · ' + gone + ' offline' : '') + ' · ' + sources.length + ' ports'
+    : (gone ? online + ' online · ' + gone + ' offline' : '');
+  if(!all.length){
+    $('workers').innerHTML = '<p class="empty">Nothing connected yet.</p>';
+    return;
+  }
+
+  // The groups with the most hashrate first; inside a group the live miners
+  // first, fastest first, then the ones that dropped out, most recent first.
+  const hr = (g) => g.miners.reduce((t, m) => t + (m.gone ? 0 : m.w.hashrate || 0), 0);
+  const ordered = [...groups.values()].sort((a, b) => hr(b) - hr(a));
+  let h = '<table class="mtab"><thead><tr><th>Miner</th><th class="wide hide">Activity</th>' +
+    '<th class="r" title="the last ten minutes">Now</th>' +
+    '<th class="r hide" title="work done in the last hour, over the time the pool ran">1 h</th>' +
+    '<th class="r hide" title="work done in the last 24 hours, over the time the pool ran">24 h</th>' +
+    '<th class="r mid hide" title="work done in the last 7 days, over the time the pool ran">7 d</th>' +
+    '<th class="r wide hide" title="best share on this connection">Best</th>' +
+    '<th class="r hide" title="best share this miner ever sent, since the last reset">Best ever</th>' +
+    '<th class="r mid hide">Shares</th><th class="r">Last</th></tr></thead>';
+  for(const g of ordered){
+    g.miners.sort((a, b) => (a.gone - b.gone) ||
+      (a.gone ? (b.w.lastSeen || 0) - (a.w.lastSeen || 0) : (b.w.hashrate || 0) - (a.w.hashrate || 0)));
+    const coins = PAY_COINS.filter((c) => g.pay[c]);
+    h += '<tbody class="mgroup"><tr class="ghead"><td colspan="10"><span class="k">paid to</span>' +
+      (coins.length ? coins.map((c) => payChip(c, g.pay[c])).join('') : '<span class="paycoin">address not on record</span>') +
+      '</td></tr>';
+    for(const m of g.miners) h += minerRow(m);
+    if(g.miners.length > 1 && ordered.length > 1) h += totalRow(g.miners.length + ' miners', g.miners);
+    h += '</tbody>';
+  }
+  h += '<tbody>' + totalRow(all.length === 1 ? '1 miner' : 'all ' + all.length + ' miners', all) + '</tbody></table>';
+
+  // Re-rendering the table throws away the focused element, so a keyboard
+  // user loses their place every five seconds. Put focus back on the same
+  // miner's row afterwards.
+  const focused = document.activeElement && document.activeElement.closest
+    ? (document.activeElement.closest('.wrow') || {}).dataset : null;
+  $('workers').innerHTML = h +
+    '<p class="empty">Now is the last ten minutes. 1 h, 24 h and 7 d are the work a miner did in that window divided by ' +
+    'the time the pool ran in it, so time it was offline counts as zero — as on the BTC and BCH pools; 7 d covers what has ' +
+    'been recorded so far, up to a week. Best is this connection\'s best share, best ever survives reconnects and updates. ' +
+    'Tap a miner for its own day.</p>';
+  if(focused && focused.worker){
+    const again = document.querySelector('.wrow[data-worker="' + cssEscape(focused.worker) + '"][data-peer="' +
+      cssEscape(focused.peer || '') + '"]');
+    // preventScroll: a focused row is left behind by an ordinary tap, and
+    // without this every refresh drags that row back into view — scrolling
+    // the detail panel the user just opened off the screen.
+    if(again) again.focus({preventScroll:true});
+  }
+}
+
 /* ---------- worker helpers ---------- */
 
 // Round-trip time, with an honest note about where it came from. A value
@@ -973,7 +1240,7 @@ function pingText(w, plain){
 // The comparison is against the worker's OWN 24-hour average, not against the
 // other miners — a 13 MH/s device is not unhealthy for being slower than a
 // 70 MH/s one.
-function workerHealth(w){
+function workerHealth(w, own = true){
   const now = Date.now();
   const quiet = w.lastShareAt ? now - w.lastShareAt : now - w.connectedAt;
   // Expected seconds between shares at the difficulty this worker is on. A
@@ -984,8 +1251,15 @@ function workerHealth(w){
   if(quiet > limit){
     return { level: 'bad', text: 'no share for ' + since(w.lastShareAt || w.connectedAt) + ' — check this miner' };
   }
-  const hist = history.workers && history.workers[w.worker];
-  const avg = hist && hist.avg24h;
+  // Its own 24-hour average, from the status where the pool sends one; this
+  // port's history is the fallback for an older peer that does not. Never
+  // another port's worker against this port's history: names can repeat.
+  // The mean of the minutes it was actually connected (history's avg24h), not
+  // the window average that counts its absence as zero: "running at half its
+  // usual rate" is about the machine, not about how long it was away. Only a
+  // peer's worker, whose minutes are not here, falls back to the window.
+  const hist = own && history.workers && history.workers[w.worker];
+  const avg = (hist && hist.avg24h) || (w.avg && w.avg.h24);
   if(avg > 0 && w.hashrate > 0 && w.hashrate < avg * 0.5){
     return { level: 'warn', text: 'running at ' + Math.round((w.hashrate/avg)*100) + '% of its own 24h average' };
   }
@@ -1574,7 +1848,10 @@ async function refreshPeers(){
     const res = await fetch('/api/peers', {cache:'no-store'});
     lastPeers = res.ok ? await res.json() : null;
   }catch(e){ lastPeers = null; }
-  if(lastStatus && lastStatus.ok) renderCoins(lastStatus);
+  if(lastStatus && lastStatus.ok){
+    renderCoins(lastStatus);
+    renderMiners(lastStatus);
+  }
 }
 
 /* ---------- main refresh ---------- */
@@ -1890,57 +2167,7 @@ async function tick(){
   $('diffNote').textContent =
     'Dogecoin retargets difficulty on every block, damped to an eighth of the deviation, so the instantaneous figure swings by tens of percent within minutes. The odds above use the recent average instead, which is the honest basis for a long-run estimate.';
 
-  // workers
-  if(!d.workers.length){
-    $('workers').innerHTML = '<p class="empty">Nothing connected yet.</p>';
-  } else {
-    let h = '<table class="wtab"><thead><tr><th>Worker</th><th>Activity</th><th class="r">Hashrate</th>' +
-            '<th class="r hide">Difficulty</th><th class="r hide">Best share</th>' +
-            '<th class="r hide">Ping</th><th class="r hide">Shares</th><th class="r">Last</th></tr></thead><tbody>';
-    for(const w of d.workers){
-      const wh = hashrate(w.hashrate);
-      const idle = !w.lastShareAt || Date.now() - w.lastShareAt > 300000;
-      const health = workerHealth(w);
-      h += '<tr class="wrow" tabindex="0" role="button" data-worker="' + esc(w.worker) + '">' +
-        '<td><div class="wname">' + esc(w.worker) +
-          // Only shown once a second port is actually in use — on a pool
-          // with just the one port this is silent, exactly as before.
-          (w.entry === 'rented' ? ' <span class="tag">rented port</span>' : '') +
-          '</div>' +
-          '<div class="wsub">' + esc(w.userAgent || w.remote || '') + '</div>' +
-          // Phone-only line. Below 640px the numeric columns are hidden to keep
-          // the table readable, and a difficulty you can only see on a laptop
-          // is a difficulty you never see.
-          '<div class="wmeta">' + pingText(w, true) + ' · diff ' + compact(w.difficulty) +
-            ' · best ' + compact(w.bestShareDiff || 0) +
-            ' · ' + w.accepted + ' shares' + (w.rejected ? ' · ' + w.rejected + ' rejected' : '') +
-          '</div>' +
-          (health.level !== 'ok' ? '<div class="wwarn ' + health.level + '">' + esc(health.text) + '</div>' : '') +
-        '</td>' +
-        '<td>' + sparkline(w.shareHistory, 10*60*1000) + '</td>' +
-        '<td class="num r">' + wh.n + ' <span class="unit">' + wh.u + '</span></td>' +
-        '<td class="num r hide">' + compact(w.difficulty) + '</td>' +
-        '<td class="num r hide">' + compact(w.bestShareDiff || 0) + '</td>' +
-        '<td class="num r hide">' + pingText(w, false) + '</td>' +
-        '<td class="num r hide">' + w.accepted + (w.rejected ? ' <span class="tag bad">' + w.rejected + '</span>' : '') + '</td>' +
-        '<td class="num r">' + (idle ? '<span class="tag bad">' + since(w.lastShareAt) + '</span>' : since(w.lastShareAt)) + '</td>' +
-      '</tr>';
-    }
-    // Re-rendering the table throws away the focused element, so a keyboard
-    // user loses their place every five seconds. Put focus back on the same
-    // worker's row afterwards.
-    const focusedWorker = document.activeElement && document.activeElement.closest
-      ? (document.activeElement.closest('.wrow') || {}).dataset : null;
-    $('workers').innerHTML = h + '</tbody></table>' +
-      '<p class="empty">Tap a worker for its own history, best share and reject reasons.</p>';
-    if(focusedWorker && focusedWorker.worker){
-      const again = document.querySelector('.wrow[data-worker="' + cssEscape(focusedWorker.worker) + '"]');
-      // preventScroll: a focused row is left behind by an ordinary tap, and
-      // without this every five-second refresh drags that row back into view —
-      // scrolling the detail panel the user just opened off the screen.
-      if(again) again.focus({preventScroll:true});
-    }
-  }
+  renderMiners(d);
 
   $('cUrl').textContent = 'stratum+tcp://' + location.hostname + ':' + d.stratumPort;
   // What goes in the username depends on the mode, and saying the wrong one

@@ -10,7 +10,11 @@
 //
 // What is checked:
 //   * /api/peers lists all three, the dead one as not answering;
-//   * only the trimmed figures come through — no worker list, no addresses;
+//   * each peer's workers come through for the dashboard's table of every
+//     miner — re-typed, with the addresses they are paid at but never the IP
+//     address of the machine;
+//   * /api/peer-worker asks a configured peer for one worker's history, and
+//     nothing else;
 //   * the widgets add the peers up and give the distance per coin;
 //   * a peer answering with something hostile (huge, not JSON, markup in the
 //     names) costs nothing and injects nothing;
@@ -41,7 +45,30 @@ const NEW_PEER = {
   bestShareStratum: 500000 * 65536,
   bestShareAt: 1786000000000,
   blocksFound: 2,
-  workers: [{ name: 'rig1', payoutAddress: 'DSecretWorkerAddressxxxxxxxxxxxxx', hashrate: 2.3e9 }],
+  publicMerged: true,
+  workers: [{
+    worker: 'rig1@DU4KTk97aC46ZbXjdTpP9tFNYCrmuLZXLd',
+    remote: '192.168.77.42',
+    userAgent: 'cgminer/4.11',
+    hashrate: 2.3e9,
+    difficulty: 65536,
+    accepted: 120,
+    rejected: 1,
+    bestShareDiff: 400000,
+    bestEverDiff: 500000,
+    totalAccepted: 9000,
+    connectedAt: 1786000000000,
+    lastShareAt: 1786000300000,
+    payoutAddress: 'DU4KTk97aC46ZbXjdTpP9tFNYCrmuLZXLd',
+    ltcPayoutAddress: 'LdAEjWgrrUjyV6Cy3DTKZ3uBNmG3FQhXsj',
+    // Markup where an address belongs is not an address.
+    pepPayoutAddress: '<script>alert(1)</script>',
+    avg: { h1: 2.2e9, h24: 'fast', d7: -5 },
+    shareHistory: [1786000200000, 'x', 1786000300000],
+    secret: 'never-forwarded',
+  }],
+  offlineWorkers: [{ worker: 'rig2@DU4KTk97aC46ZbXjdTpP9tFNYCrmuLZXLd', lastSeen: 1785990000000, accepted: 50,
+    bestShareDiff: 1000, avg: { h1: 0, h24: 1e8, d7: 2e8 }, remote: '10.0.0.9' }],
   chains: [
     { name: 'LTC', label: 'Litecoin', height: 3205062, difficulty: 95864124 },
     { name: 'DOGE', label: 'Dogecoin', height: 6438477, difficulty: 49920142 },
@@ -64,6 +91,11 @@ const OLD_PEER = {
   workers: [{ name: 'a' }, { name: 'b' }],
 };
 
+// JSON, "ok", but not shaped like a status: a chain that is null, a name that
+// cannot be turned into text. It must fail on its own, not stop every peer
+// from being read.
+const BROKEN_PEER = JSON.parse('{"ok":true,"chains":[null,{"name":{"toString":1}}],"workers":[null,7,{"worker":{"toString":1}}]}');
+
 let hostile = false;
 // A peer that sends headers and then one byte a second, for ever: the socket
 // is never silent long enough for a plain socket timeout to fire.
@@ -74,8 +106,30 @@ function tricklePeer() {
     res.on('close', () => clearInterval(t));
   });
 }
+// One worker's stored history, as a peer's /api/worker gives it — with the
+// things a hostile peer could slip in.
+const WORKER_HISTORY = {
+  ok: true,
+  name: 'rig1@DU4KTk97aC46ZbXjdTpP9tFNYCrmuLZXLd',
+  worker: {
+    accepted: 9000, rejected: 3, bestShareDiff: 500000, bestShareAt: 1786000000000,
+    firstSeen: 1785000000000, lastSeen: 1786000300000, work: 123456,
+    rejectReasons: JSON.parse('{"__proto__": 7, "stale": 2, "low difficulty": "many"}'),
+    samples: [...Array(2000).keys()].map((i) => [1786000000 + i * 60, 2.3e9]).concat([['x', 1], [1, 'y']]),
+    remote: '192.168.77.42',
+  },
+};
+let workerAsked = null;
+
 function peerServer(body) {
   return http.createServer((req, res) => {
+    if (req.url.startsWith('/api/worker?')) {
+      workerAsked = new URL(req.url, 'http://x').searchParams.get('name');
+      const known = workerAsked === WORKER_HISTORY.name;
+      res.writeHead(known ? 200 : 404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(known ? WORKER_HISTORY : { ok: false, error: 'unknown worker' }));
+      return;
+    }
     if (req.url !== '/api/status') { res.writeHead(404); res.end(); return; }
     if (hostile) {
       // Four megabytes of something that is not JSON.
@@ -94,9 +148,11 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   const a = peerServer(NEW_PEER);
   const b = peerServer(OLD_PEER);
   const c = tricklePeer();
+  const e = peerServer(BROKEN_PEER);
   const pa = await listen(a);
   const pb = await listen(b);
   const pc = await listen(c);
+  const pe = await listen(e);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doge-peers-'));
 
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'images/stratum/src/server.js')], {
@@ -111,7 +167,7 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
       STALL_RESTART_MINUTES: '0',
       // Three good entries (one dead) and two that must be ignored: a URL and
       // a host with a path in it.
-      PEER_POOLS: `3335=localhost:${pa},3339=localhost:${pb},dead=localhost:1,slow=localhost:${pc},` +
+      PEER_POOLS: `3335=localhost:${pa},3339=localhost:${pb},dead=localhost:1,slow=localhost:${pc},broken=localhost:${pe},` +
         'evil=http://example.com:80,bad=localhost:80/api',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -121,7 +177,7 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   child.stderr.on('data', (d) => { log += d; });
   const stop = () => {
     try { child.kill('SIGKILL'); } catch { /* gone */ }
-    a.close(); b.close(); c.closeAllConnections(); c.close();
+    a.close(); b.close(); c.closeAllConnections(); c.close(); e.close();
     fs.rmSync(dir, { recursive: true, force: true });
   };
 
@@ -141,8 +197,8 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   }
 
   console.log('\n/api/peers');
-  check('four peers configured; the URL and the path entries are ignored',
-    peers.map((p) => p.name).join() === '3335,3339,dead,slow', peers.map((p) => p.name).join());
+  check('five peers configured; the URL and the path entries are ignored',
+    peers.map((p) => p.name).join() === '3335,3339,dead,slow,broken', peers.map((p) => p.name).join());
   check('and the log says so', /ignoring "evil=/.test(log) && /ignoring "bad=/.test(log), log.slice(0, 600));
   const [p1, p2, p3] = peers;
   check('the 1.9.0 peer is read with all four coins',
@@ -154,10 +210,68 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   check('the dead one is shown as not answering', p3.ok === false && !!p3.error, JSON.stringify(p3));
   const p4 = peers[3];
   check('a peer trickling one byte a second is cut off at the deadline', p4.ok === false && /timed out/.test(p4.error || ''), JSON.stringify(p4));
+  check('a peer whose answer is JSON but not a status fails on its own',
+    peers[4].ok === false && peers[4].error === 'not a pool status', JSON.stringify(peers[4]));
+  check('and the good peers are still read next to it', p1.ok && p2.ok);
   const alive = await fetch(`${BASE}/health`).then((r) => r.status).catch(() => 0);
   check('and the process survives it', alive === 200 || alive === 503, String(alive));
-  check('worker lists and addresses stay behind', !JSON.stringify(peers).includes('DSecretWorkerAddress') &&
-    p1.status.workerCount === 1 && p2.status.workerCount === 2);
+  check('worker counts per peer', p1.status.workerCount === 1 && p2.status.workerCount === 2);
+
+  console.log('\nevery miner, for the dashboard');
+  const w1 = p1.status.workers[0] || {};
+  check('a peer\'s worker comes through with its name, port and figures',
+    w1.worker === NEW_PEER.workers[0].worker && w1.hashrate === 2.3e9 && w1.totalAccepted === 9000 &&
+    w1.bestEverDiff === 500000 && w1.entry === 'primary', JSON.stringify(w1));
+  check('with the addresses it is paid at', w1.ltcPayoutAddress === 'LdAEjWgrrUjyV6Cy3DTKZ3uBNmG3FQhXsj' &&
+    w1.payoutAddress === 'DU4KTk97aC46ZbXjdTpP9tFNYCrmuLZXLd', JSON.stringify(w1));
+  check('markup where an address belongs is dropped, not passed on', w1.pepPayoutAddress === null, JSON.stringify(w1));
+  check('no IP address of any miner leaves the pool that saw it',
+    !JSON.stringify(peers).includes('192.168.77.42') && !JSON.stringify(peers).includes('10.0.0.9') && !('remote' in w1));
+  check('fields the dashboard does not use are not forwarded', !JSON.stringify(peers).includes('never-forwarded'));
+  check('averages are numbers or null, never what the peer sent',
+    w1.avg && w1.avg.h1 === 2.2e9 && w1.avg.h24 === null && w1.avg.d7 === null, JSON.stringify(w1.avg));
+  check('share times are numbers only', JSON.stringify(w1.shareHistory) === '[1786000200000,1786000300000]', JSON.stringify(w1.shareHistory));
+  check('a public peer says so, for grouping by address', p1.status.publicMerged === true && p2.status.publicMerged === false);
+  const g1 = p1.status.offlineWorkers[0] || {};
+  check('miners that dropped out come through, with their averages', g1.worker === 'rig2@DU4KTk97aC46ZbXjdTpP9tFNYCrmuLZXLd' &&
+    g1.lastSeen === 1785990000000 && g1.avg && g1.avg.d7 === 2e8, JSON.stringify(g1));
+  check('an older peer simply has none', Array.isArray(p2.status.workers) && p2.status.workers.length === 2 &&
+    p2.status.workers[0].avg === null && p2.status.offlineWorkers.length === 0, JSON.stringify(p2.status.workers));
+
+  console.log('\n/api/peer-worker');
+  const pw = await fetch(`${BASE}/api/peer-worker?peer=0&name=${encodeURIComponent(WORKER_HISTORY.name)}`);
+  const pwBody = await pw.json();
+  check('asks the right peer for the right name', pw.status === 200 && workerAsked === WORKER_HISTORY.name && pwBody.peer === '3335',
+    `${pw.status} ${workerAsked}`);
+  const hw = pwBody.worker || {};
+  check('a day of minutes at most, numbers only', Array.isArray(hw.samples) && hw.samples.length === 1440 &&
+    hw.samples.every((p) => p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1])), String(hw.samples && hw.samples.length));
+  check('reject reasons are counts; "__proto__" is only a key',
+    hw.rejectReasons && hw.rejectReasons.stale === 2 && !('low difficulty' in hw.rejectReasons) &&
+    ({}).stale === undefined && Object.getPrototypeOf({}) === Object.prototype, JSON.stringify(hw.rejectReasons));
+  check('and no IP address', !JSON.stringify(pwBody).includes('192.168.77.42'));
+  const unknownName = await fetch(`${BASE}/api/peer-worker?peer=0&name=nobody`);
+  check('an unknown worker is a 404', unknownName.status === 404, String(unknownName.status));
+  for (const [what, q] of [
+    ['a peer that is not configured', 'peer=9&name=rig1'],
+    ['a negative peer', 'peer=-1&name=rig1'],
+    ['a peer given by name', 'peer=3335&name=rig1'],
+    ['no name', 'peer=0'],
+    ['a name longer than any worker\'s', `peer=0&name=${'x'.repeat(65)}`],
+  ]) {
+    const r = await fetch(`${BASE}/api/peer-worker?${q}`);
+    check(`${what} is refused`, r.status === 400, String(r.status));
+  }
+  const dead = await fetch(`${BASE}/api/peer-worker?peer=2&name=rig1`);
+  check('a peer that does not answer is a 404 with the reason', dead.status === 404 && !!(await dead.json()).error, String(dead.status));
+  // Six at once against the peer that trickles: four are let through, and
+  // the rest are refused straight away instead of piling up connections.
+  const burst = await Promise.all([...Array(6)].map(() =>
+    fetch(`${BASE}/api/peer-worker?peer=3&name=rig1`).then((r) => r.status).catch(() => 0)));
+  check('more than four at once are refused, not queued', burst.filter((x) => x === 503).length === 2 &&
+    burst.filter((x) => x === 404).length === 4, burst.join());
+  const afterBurst = await fetch(`${BASE}/api/peer-worker?peer=0&name=${encodeURIComponent(WORKER_HISTORY.name)}`);
+  check('and once they are done, the next one is answered', afterBurst.status === 200, String(afterBurst.status));
 
   console.log('\nwidgets add the ports up');
   const hrw = await (await fetch(`${BASE}/api/widget/hashrate`)).json();
@@ -196,6 +310,7 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
 
   const html = await (await fetch(`${BASE}/`)).text();
   check('the page escapes peer names before using them', /function esc\(/.test(html) && html.includes("esc(c.label || c.name)"));
+  check('and miners\' names and addresses', html.includes("esc(w.worker)") && html.includes("esc(shortAddress(address))"));
 
   stop();
   console.log(failures === 0 ? '\nPEER POOLS VERIFIED' : `\n${failures} CHECK(S) FAILED`);
