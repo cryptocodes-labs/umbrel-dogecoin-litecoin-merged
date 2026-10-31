@@ -60,8 +60,12 @@ RUN set -eux; \
     echo "Downloading ${URL}"; \
     curl -fsSL --retry 5 --retry-delay 3 -o "/tmp/${TARBALL}" "${URL}"; \
     echo "${SOQ_SHA}  /tmp/${TARBALL}" | sha256sum -c -; \
+    # The tarball must hold exactly the two programs and nothing else; a
+    # release that suddenly ships more is refused rather than copied in.
+    CONTENTS="$(tar -tzf "/tmp/${TARBALL}" | sed 's#^\./##' | grep -v '^$' | sort | tr '\n' ' ')"; \
+    [ "${CONTENTS}" = "soqucoin-cli soqucoind " ] || { echo "unexpected tarball contents: ${CONTENTS}" >&2; exit 1; }; \
     mkdir -p /opt/soqucoin/bin; \
-    tar -xzf "/tmp/${TARBALL}" -C /opt/soqucoin/bin; \
+    tar -xzf "/tmp/${TARBALL}" -C /opt/soqucoin/bin ./soqucoind ./soqucoin-cli; \
     rm -f "/tmp/${TARBALL}"; \
     chmod +x /opt/soqucoin/bin/soqucoind /opt/soqucoin/bin/soqucoin-cli; \
     /opt/soqucoin/bin/soqucoind --version | head -1

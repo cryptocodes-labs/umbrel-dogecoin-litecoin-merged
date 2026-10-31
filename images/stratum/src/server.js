@@ -12,6 +12,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { Pool } = require('./pool');
+const { singleAddressLookup } = require('./rpc');
 const { Store } = require('./store');
 const { PushService } = require('./push');
 const { HealthMonitor } = require('./health');
@@ -222,7 +223,10 @@ const config = {
           payoutAddress: (process.env.SOQ_PAYOUT_ADDRESS || '').trim(),
         }
       : null,
-  soqPollMs: Math.max(500, num('SOQ_POLL_MS', 2000)),
+  // Every second: a new Soqucoin tip is only seen by polling, and work built on
+  // the old one can no longer win. createauxblock is answered from soqucoind's
+  // cache until the tip moves, so the cost is one small call a second.
+  soqPollMs: Math.max(500, num('SOQ_POLL_MS', 1000)),
 
   stratumPort: STRATUM_PORT,
   // Stratum-space difficulties (scrypt, so one share costs D * 2^16 hashes).
@@ -742,6 +746,11 @@ function trimPeerStatus(s) {
     label: String(c.label || c.name || '').slice(0, 24),
     height: num(c.height),
     difficulty: num(c.difficulty),
+    // A chain that is not in every job (PEP, SOQ) carries its own best share:
+    // only shares made while it was being mined. Absent: the pool's best. The
+    // same for the hashrate that can win it.
+    ...(typeof c.best === 'number' && Number.isFinite(c.best) ? { best: c.best } : {}),
+    ...(typeof c.hashrate === 'number' && Number.isFinite(c.hashrate) ? { hashrate: c.hashrate } : {}),
   }));
   return {
     totalHashrate: num(s.totalHashrate),
@@ -755,9 +764,29 @@ function trimPeerStatus(s) {
 }
 
 function fetchPeerStatus(peer) {
-  return new Promise((resolve) => {
+  return new Promise((settle) => {
+    // One answer per request, and a deadline for the WHOLE exchange: the
+    // socket timeout alone only fires after a silence, so a peer trickling a
+    // byte every few seconds would otherwise hold the request open for ever.
+    let settled = false;
+    let deadline = null;
+    const resolve = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      settle(v);
+    };
     const req = http.get(
-      { host: peer.host, port: peer.port, path: '/api/status', timeout: PEER_TIMEOUT_MS, headers: { Accept: 'application/json' } },
+      {
+        host: peer.host,
+        port: peer.port,
+        path: '/api/status',
+        timeout: PEER_TIMEOUT_MS,
+        headers: { Accept: 'application/json' },
+        // A name another container on the shared network also answers to is
+        // refused rather than read (see singleAddressLookup in rpc.js).
+        lookup: singleAddressLookup,
+      },
       (res) => {
         if (res.statusCode !== 200) {
           res.resume();
@@ -766,6 +795,10 @@ function fetchPeerStatus(peer) {
         }
         let size = 0;
         const chunks = [];
+        // Destroying the request mid-body (too large, too slow) makes the
+        // response emit 'error'. Unhandled, that would take down this whole
+        // process — the pool included — for a fault in somebody else's.
+        res.on('error', (err) => resolve({ ok: false, error: err.message || err.code || 'connection lost' }));
         res.on('data', (c) => {
           size += c.length;
           if (size > PEER_MAX_BYTES) {
@@ -785,6 +818,7 @@ function fetchPeerStatus(peer) {
         });
       }
     );
+    deadline = setTimeout(() => req.destroy(new Error('timed out')), PEER_TIMEOUT_MS);
     req.on('timeout', () => req.destroy(new Error('timed out')));
     // A name that resolves to several addresses fails with an AggregateError
     // whose message is empty; its code (ECONNREFUSED, ENOTFOUND) is the reason.
@@ -795,10 +829,19 @@ function fetchPeerStatus(peer) {
 const peerPools = parsePeerPools(process.env.PEER_POOLS);
 let peerResults = peerPools.map((p) => ({ name: p.name, ok: false, error: 'not read yet', at: null, status: null }));
 
+let peersPolling = false;
 async function pollPeers() {
-  peerResults = await Promise.all(
-    peerPools.map(async (p) => ({ name: p.name, at: Date.now(), status: null, error: null, ...(await fetchPeerStatus(p)) }))
-  );
+  // Never two rounds at once, so a slow round can neither pile up sockets nor
+  // land after a newer one and overwrite it.
+  if (peersPolling) return;
+  peersPolling = true;
+  try {
+    peerResults = await Promise.all(
+      peerPools.map(async (p) => ({ name: p.name, at: Date.now(), status: null, error: null, ...(await fetchPeerStatus(p)) }))
+    );
+  } finally {
+    peersPolling = false;
+  }
 }
 
 // This port plus every peer that answered: what the widgets show, so umbrelOS
@@ -811,7 +854,10 @@ function combinedFigures(snap) {
   const chains = (own && own.chains.length ? own : all.find((s) => s.chains.length) || { chains: [] }).chains;
   // Per coin, the best share of the ports that mine that coin: a share on a
   // port without Soqucoin could never have been a Soqucoin block.
-  const bestFor = (name) => Math.max(0, ...all.filter((x) => x.chains.some((c) => c.name === name)).map((x) => x.bestShareDiff));
+  const bestFor = (name) => Math.max(0, ...all.map((x) => {
+    const c = x.chains.find((k) => k.name === name);
+    return !c ? 0 : c.best !== undefined ? c.best : x.bestShareDiff;
+  }));
   return {
     peers: live.length,
     bestFor,

@@ -263,6 +263,9 @@ const counts = () => Promise.all([
     const chains = pool.snapshot().chains || [];
     check('the status lists all four coins with their own difficulty, for the distance per coin',
       chains.map((c) => c.name).join() === 'LTC,DOGE,PEP,SOQ' && chains.every((c) => c.difficulty > 0), JSON.stringify(chains));
+    const soqChain = chains.find((c) => c.name === 'SOQ');
+    check('and Soqucoin\'s own best share counts the share made while it was mined',
+      soqChain && soqChain.best > 0, JSON.stringify(soqChain));
     m.socket.destroy();
     pool.stop();
   }
@@ -337,6 +340,8 @@ const counts = () => Promise.all([
       const [l1, d1, p1] = await Promise.all([ltc.call('getblockcount'), doge.call('getblockcount'), pep.call('getblockcount')]);
       check('and still makes a Litecoin, a Dogecoin and a Pepecoin block',
         l1 === l0 + 1 && d1 === d0 + 1 && p1 === p0 + 1, `${l0}->${l1} ${d0}->${d1} ${p0}->${p1}`);
+      check('a share made without Soqucoin in the job does not count as a Soqucoin best',
+        !pool.stats.chainBest.SOQ && pool.stats.chainBest.PEP && pool.stats.chainBest.PEP.diff > 0, JSON.stringify(pool.stats.chainBest));
     }
     m.socket.destroy();
     pool.stop();

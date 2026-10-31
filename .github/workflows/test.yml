@@ -49,6 +49,12 @@ jobs:
       - name: Litecoin entrypoint and config-generation suite
         run: bash ./test/ltc_entrypoint.sh
 
+      # The Soqucoin Node's config: wallet off, mining RPCs on, password only
+      # as an rpcauth HMAC, private RPC ranges, uid 1000 — then a real
+      # soqucoind (the pinned release) started on it.
+      - name: Soqucoin entrypoint and config-generation suite
+        run: bash ./test/soq_entrypoint.sh
+
       - name: Solo app .env loader suite
         run: bash ./test/solo_exports.sh
 

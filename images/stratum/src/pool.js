@@ -162,9 +162,15 @@ class Pool extends EventEmitter {
         this.soq = {
           name: 'SOQ',
           label: 'Soqucoin',
-          rpc: new RpcClient({ ...config.soq.rpc, timeout: 5000 }),
-          submitRpc: new RpcClient({ ...config.soq.rpc, timeout: 180000 }),
+          // A hard deadline, not only a silence timeout: a node trickling
+          // bytes must not stall a poll (or the pool's start, which waits for
+          // the first one). And a host name that answers with more than one
+          // address on the shared docker network is refused (see rpc.js).
+          rpc: new RpcClient({ ...config.soq.rpc, timeout: 5000, deadline: 5000, singleAddress: true }),
+          submitRpc: new RpcClient({ ...config.soq.rpc, timeout: 180000, singleAddress: true }),
           payoutAddress: config.soq.payoutAddress,
+          // Set once soqucoind has said which network it is on (see fetchSoqBlock).
+          networkChecked: false,
           block: null,
           unavailableSince: null,
           error: null,
@@ -211,6 +217,12 @@ class Pool extends EventEmitter {
       pepTipMissedAt: null,
       soqTipMissed: 0,
       soqTipMissedAt: null,
+      // The best share per further aux chain (PEP, SOQ), counted only while
+      // that chain was in the job the share was for: a share from before
+      // Soqucoin was configured, or from while its node was down, could never
+      // have been a Soqucoin block. In memory, so it starts again at a restart;
+      // Litecoin and Dogecoin are in every merged job and use bestShareDiff.
+      chainBest: {},
     };
     // How often dogecoind's longpoll came back, and how often that was actually
     // a new tip rather than a mempool update. Both are surfaced: zero tip moves
@@ -415,7 +427,7 @@ class Pool extends EventEmitter {
       this.pepTimer.unref();
     }
     if (this.soq) {
-      this.soqTimer = setInterval(() => this.pollSoq(), this.config.soqPollMs || 2000);
+      this.soqTimer = setInterval(() => this.pollSoq(), this.config.soqPollMs || 1000);
       this.soqTimer.unref();
     }
     this.longPollLoop();
@@ -612,7 +624,13 @@ class Pool extends EventEmitter {
     }
     const now = pep.block ? pep.block.hash : null;
     if (now !== had && this.currentJob && !this.refreshInFlight) {
-      this.refreshTemplate(now ? 'pepecoin block' : 'pepecoin gone').catch(() => {});
+      // Under the same flag as the poll timer's refresh, so the two can never
+      // overlap and land out of order. A change seen while one is in flight is
+      // picked up by the next poll: the job remembers which block it carries.
+      this.refreshInFlight = true;
+      this.refreshTemplate(now ? 'pepecoin block' : 'pepecoin gone')
+        .catch(() => {})
+        .finally(() => { this.refreshInFlight = false; });
     }
   }
 
@@ -644,6 +662,7 @@ class Pool extends EventEmitter {
     if (!block || !/^[0-9a-f]{64}$/.test(String(block.hash))) {
       throw new Error('pepecoind createauxblock did not return an aux block hash');
     }
+    this.checkAuxAnswer(block, 'pepecoind');
     // The tree puts each chain at the slot its own id dictates; a daemon that
     // is not Pepecoin would be committed to at the wrong slot and every proof
     // refused. Treated like an outage: left out, said out loud.
@@ -678,16 +697,32 @@ class Pool extends EventEmitter {
       }
       soq.error = err.message;
       soq.block = null;
+      // A node that comes back may be a different one; ask again.
+      soq.networkChecked = false;
     } finally {
       soq.polling = false;
     }
     const now = soq.block ? soq.block.hash : null;
     if (now !== had && this.currentJob && !this.refreshInFlight) {
-      this.refreshTemplate(now ? 'soqucoin block' : 'soqucoin gone').catch(() => {});
+      // See pollPep: one refresh at a time.
+      this.refreshInFlight = true;
+      this.refreshTemplate(now ? 'soqucoin block' : 'soqucoin gone')
+        .catch(() => {})
+        .finally(() => { this.refreshInFlight = false; });
     }
   }
 
   async fetchSoqBlock() {
+    // Once per spell of availability: is this soqucoind on the pool's network?
+    // Mainnet, testnet and regtest share the sq1 address prefix and the chain
+    // id, so nothing else would notice a mainnet pool mining testnet SOQ.
+    if (!this.soq.networkChecked) {
+      const info = await this.soq.rpc.call('getblockchaininfo');
+      if (!info || info.chain !== this.chain) {
+        throw new Error(`the node at SOQ_RPC_HOST is on ${info && info.chain}, this pool on ${this.chain}`);
+      }
+      this.soq.networkChecked = true;
+    }
     const block = await this.soq.rpc.call('createauxblock', [this.soq.payoutAddress]);
     if (!block || !/^[0-9a-f]{64}$/.test(String(block.hash))) {
       throw new Error('soqucoind createauxblock did not return an aux block hash');
@@ -695,7 +730,31 @@ class Pool extends EventEmitter {
     if (block.chainid !== SOQ_CHAIN_ID) {
       throw new Error(`the node at SOQ_RPC_HOST reports chain id ${block.chainid}, not Soqucoin's ${SOQ_CHAIN_ID}`);
     }
+    this.checkAuxAnswer(block, 'soqucoind');
     return block;
+  }
+
+  // The rest of a createauxblock answer, checked before any of it is used. A
+  // node that is broken or not what it claims could otherwise hand back a
+  // target so easy that every share becomes a block candidate — a submission,
+  // a log line, a saved record and a push for each — or a height that ends up
+  // in the dashboard. Its target may be no easier than the chain's own
+  // minimum difficulty (powLimit ~uint256(0) >> 20 on mainnet and testnet,
+  // the same for Dogecoin, Pepecoin and Soqucoin; 0x7fff… on regtest).
+  checkAuxAnswer(block, daemon) {
+    if (!/^[0-9a-f]{8}$/.test(String(block.bits))) {
+      throw new Error(`${daemon} returned bits ${JSON.stringify(block.bits)}, not 8 hex digits`);
+    }
+    const limit = u.targetFromBits(this.chain === 'regtest' ? '207fffff' : '1e0fffff');
+    if (u.targetFromBits(block.bits) > limit) {
+      throw new Error(`${daemon} returned a target easier than the chain allows (bits ${block.bits})`);
+    }
+    if (!Number.isSafeInteger(block.height) || block.height <= 0) {
+      throw new Error(`${daemon} returned height ${JSON.stringify(block.height)}`);
+    }
+    if (!Number.isSafeInteger(block.coinbasevalue) || block.coinbasevalue < 0) {
+      throw new Error(`${daemon} returned coinbase value ${JSON.stringify(block.coinbasevalue)}`);
+    }
   }
 
   // Ask the node about every block we recorded but never resolved.
@@ -976,6 +1035,7 @@ class Pool extends EventEmitter {
     if (scope.best) {
       this.stats.bestShareDiff = 0;
       this.stats.bestShareAt = null;
+      this.stats.chainBest = {};
       for (const c of this.clients.values()) c.bestShareDiff = 0;
     }
     this.stats.resetAt = Date.now();
@@ -2104,6 +2164,10 @@ class Pool extends EventEmitter {
       this.stats.bestShareDiff = result.shareDiff;
       this.stats.bestShareAt = now;
     }
+    for (const a of effectiveJob.extraAux || []) {
+      const cur = this.stats.chainBest[a.name];
+      if (!cur || result.shareDiff > cur.diff) this.stats.chainBest[a.name] = { diff: result.shareDiff, at: now };
+    }
     if (this.store) {
       this.store.recordShare(now, result.shareDiff, creditedDifficulty, client.worker);
     }
@@ -2719,20 +2783,31 @@ class Pool extends EventEmitter {
     // the best share came to a block on THAT chain. One hash, several targets:
     // the same share is a far bigger fraction of a Pepecoin block than of a
     // Litecoin one, and the dashboard shows each.
+    // The hashrate that can actually win each chain. On the public port a
+    // miner mines Pepecoin only when its username carries a Pepecoin address,
+    // so Pepecoin's share of the hashrate is those miners' alone; everywhere
+    // else every connected miner mines every chain in the job.
+    const allHashrate = workers.reduce((t, w) => t + w.hashrate, 0);
+    const pepHashrate = this.publicMerged
+      ? workers.filter((w) => w.pepPayoutAddress).reduce((t, w) => t + w.hashrate, 0)
+      : allHashrate;
     const chains = !job
       ? []
       : this.merged
         ? [
-            { name: 'LTC', label: 'Litecoin', height: job.height, difficulty: job.networkDifficulty },
-            { name: 'DOGE', label: 'Dogecoin', height: job.auxHeight, difficulty: job.auxDifficulty },
+            { name: 'LTC', label: 'Litecoin', height: job.height, difficulty: job.networkDifficulty, hashrate: allHashrate },
+            { name: 'DOGE', label: 'Dogecoin', height: job.auxHeight, difficulty: job.auxDifficulty, hashrate: allHashrate },
             ...(job.extraAux || []).map((a) => ({
               name: a.name,
               label: a.name === 'PEP' ? 'Pepecoin' : a.name === 'SOQ' ? 'Soqucoin' : a.name,
               height: a.height,
               difficulty: a.difficulty,
+              hashrate: a.name === 'PEP' ? pepHashrate : allHashrate,
+              // Only the shares made while this chain was being mined.
+              best: this.stats.chainBest[a.name] ? this.stats.chainBest[a.name].diff : 0,
             })),
           ]
-        : [{ name: 'DOGE', label: 'Dogecoin', height: job.height, difficulty: job.networkDifficulty }];
+        : [{ name: 'DOGE', label: 'Dogecoin', height: job.height, difficulty: job.networkDifficulty, hashrate: allHashrate }];
     return {
       chain: this.chain,
       mergedMining: !!this.merged,

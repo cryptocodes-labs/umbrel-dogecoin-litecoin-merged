@@ -1159,7 +1159,7 @@ function showBanner(b){
         ? 'Another block reached this height first, so it did not make the chain. Nothing was done wrong.'
         : 'Your node did not accept it' + (b.error ? ': ' + esc(b.error) : '.');
   $('jackpotText').innerHTML =
-    '<b>' + coinName(b) + '.</b> Height <span class="num">' + b.height + '</span>, worth <span class="num">' +
+    '<b>' + coinName(b) + '.</b> Height <span class="num">' + esc(b.height) + '</span>, worth <span class="num">' +
     (Number.isFinite(b.reward) ? (b.reward/1e8).toLocaleString('en-US',{maximumFractionDigits:2}) : '—') +
     ' ' + chainOf(b) + '</span>, found by ' +
     esc(b.worker) + ' and paid to <span class="num">' + esc(b.address) + '</span>. ' + verdict;
@@ -1278,6 +1278,14 @@ function chainsOf(s){
   if(s.networkDifficulty) out.push({name:'DOGE', label:'Dogecoin', difficulty:s.networkDifficulty});
   return out;
 }
+// The best share that counts for one coin: the chain's own figure when the
+// pool keeps one (PEP, SOQ — only shares made while that coin was mined),
+// otherwise the pool's best (LTC and DOGE are in every merged job).
+function bestOn(s, name){
+  const c = chainsOf(s).find((k) => k.name === name);
+  if(!c) return 0;
+  return typeof c.best === 'number' ? c.best : (s.bestShareDiff || 0);
+}
 function share(best, difficulty){
   if(!(difficulty > 0) || !(best > 0)) return '—';
   const f = best/difficulty;
@@ -1327,8 +1335,15 @@ function renderCoins(d){
   // on a port without Soqucoin could never have been a Soqucoin block, and its
   // hashrate does not bring one closer.
   const mining = (name) => live.filter((p) => chainsOf(p.status).some((c) => c.name === name)).map((p) => p.status);
-  const allBestFor = (name) => Math.max(ownBest, ...mining(name).map((s) => s.bestShareDiff || 0));
-  const allRateFor = (name) => (d.totalHashrate || 0) + mining(name).reduce((t, s) => t + (s.totalHashrate || 0), 0);
+  const allBestFor = (name) => Math.max(bestOn(d, name), ...mining(name).map((s) => bestOn(s, name)));
+  // The hashrate that can win this coin: a chain's own figure when the pool
+  // reports one (on a public port only the miners who gave a Pepecoin address
+  // mine Pepecoin), else everything connected.
+  const rateOn = (s, name) => {
+    const c = chainsOf(s).find((k) => k.name === name);
+    return c && typeof c.hashrate === 'number' ? c.hashrate : (s.totalHashrate || 0);
+  };
+  const allRateFor = (name) => rateOn(d, name) + mining(name).reduce((t, s) => t + rateOn(s, name), 0);
 
   // One hash, several targets: the same best share is a different fraction of
   // a block on every chain.
@@ -1341,16 +1356,19 @@ function renderCoins(d){
       (live.length ? '<th class="r">Best, all ports</th>' : '') +
       '<th class="r">Expected wait</th></tr></thead><tbody>';
     for(const c of chains){
-      const rate = live.length ? allRateFor(c.name) : (d.totalHashrate || 0);
+      const rate = live.length ? allRateFor(c.name) : rateOn(d, c.name);
       h += '<tr class="' + coinClass(c.name) + '"><td><i class="cdot"></i>' + esc(c.label || c.name) +
         '<span class="ccode">' + esc(c.name) + '</span></td>' +
         '<td class="num r hide">' + compact(c.difficulty) + '</td>' +
-        '<td class="num r">' + share(ownBest, c.difficulty) + '</td>' +
+        '<td class="num r">' + share(bestOn(d, c.name), c.difficulty) + '</td>' +
         (live.length ? '<td class="num r">' + share(allBestFor(c.name), c.difficulty) + '</td>' : '') +
         '<td class="num r">' + (rate > 0 ? '~' + duration(blockSeconds(c.difficulty, rate)) : '—') + '</td></tr>';
     }
+    const partial = chains.some((c) => typeof c.best === 'number');
     $('coins').innerHTML = h + '</tbody></table><p class="foot">Expected wait is an average at the current hashrate of ' +
-      (live.length ? 'every port that mines that coin' : 'this port') + ', not a countdown.</p>';
+      (live.length ? 'every port that mines that coin' : 'this port') + ', not a countdown.' +
+      (partial ? ' Pepecoin and Soqucoin count only the shares made while they were being mined, since the app last started.' : '') +
+      '</p>';
     $('coinsNote').textContent = chains.length > 1 ? 'one hash, ' + chains.length + ' chances' : '';
   }
 
@@ -1374,7 +1392,7 @@ function renderCoins(d){
     }
     const hr = hashrate(r.s.totalHashrate);
     hrSum += r.s.totalHashrate || 0; wSum += r.s.workerCount || 0; bSum += r.s.blocksFound || 0;
-    const dist = chainsOf(r.s).map((c) => esc(c.name) + ' ' + share(r.s.bestShareDiff, c.difficulty)).join(' · ');
+    const dist = chainsOf(r.s).map((c) => esc(c.name) + ' ' + share(bestOn(r.s, c.name), c.difficulty)).join(' · ');
     t += '<tr><td><i class="pdot' + (r.s.workerCount ? ' on' : '') + '"></i>' + esc(r.name) +
       '<div class="pdist">' + (dist || 'no shares yet') + '</div></td>' +
       '<td class="num r">' + count(r.s.workerCount) + '</td>' +
@@ -1831,7 +1849,7 @@ async function tick(){
       // hasOwnProperty, not a bare lookup: `status: "constructor"` would
       // otherwise render the source of Object into the page.
       const tag = Object.prototype.hasOwnProperty.call(TAGS, b.status) ? TAGS[b.status] : TAGS.submitting;
-      h += '<tr><td class="num">' + b.height + '</td>' +
+      h += '<tr><td class="num">' + esc(b.height) + '</td>' +
         (anyLtc ? '<td>' + chainOf(b) + '</td>' : '') +
         '<td>' + tag + (b.error ? '<div class="wsub">' + esc(b.error) + '</div>' : '') + '</td>' +
         '<td class="hide"><div class="wname">' + esc(b.worker) + '</div></td>' +

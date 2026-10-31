@@ -28,6 +28,15 @@ services:
     # is 150 MB; soqucoind fits well inside this. If the log ever shows it
     # being killed for memory, raise this before anything else.
     mem_limit: 1536m
+    # A node needs a few dozen threads; this caps what a compromised one can
+    # fork, so it cannot exhaust the Umbrel's process table.
+    pids_limit: 256
+    # Nothing outside /data is ever written: the entrypoint generates the
+    # config there and soqucoind keeps its chain there. A read-only image means
+    # a compromised daemon cannot alter its own programs or scripts.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     logging: *default-logging
     volumes:
       - ${APP_DATA_DIR}/data:/data
@@ -44,11 +53,10 @@ services:
       RPC_PASSWORD: ${APP_SOQUCOIN_NODE_RPC_PASS:-}
       RPC_PORT: "33389"
       P2P_PORT: "33388"
-      # Private ranges only — never 0.0.0.0/0. With Docker's default iptables
-      # DNAT the client's real source address is preserved, so a client outside
-      # these ranges (a Tailscale peer, say) is refused. 100.64.0.0/10 is
-      # included for exactly that case.
-      RPC_ALLOW_IP: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,127.0.0.1"
+      # Docker's private ranges and the container itself only. The RPC port is
+      # not published, so nothing on the LAN or the tailnet can reach it
+      # anyway; the pool reaches it over umbrelOS's internal network.
+      RPC_ALLOW_IP: "10.0.0.0/8,172.16.0.0/12,127.0.0.1"
       # Raised above the Dogecoin Core defaults of 4 threads and a queue of 16,
       # as for the other nodes: the pool polls this node every two seconds.
       RPC_THREADS: "8"
@@ -80,7 +88,9 @@ services:
       ONLYNET: ""              # e.g. onion, ipv4
       EXTRA_ARGS: ""           # Any extra soqucoind flags.
     healthcheck:
-      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      # As the soqucoin user, not root: the check reads files in a directory
+      # that user can write to.
+      test: ["CMD", "gosu", "soqucoin", "/usr/local/bin/healthcheck.sh"]
       interval: 30s
       timeout: 15s
       retries: 5

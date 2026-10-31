@@ -228,5 +228,101 @@ console.log('\nthe pool: SOQ in private merged mode only');
   check('the snapshot reports soq null when it is not configured', snap.soq === null && snap.soqIgnored === null);
 }
 
-console.log(`\n${checks - failures}/${checks} checks passed`);
-process.exit(failures === 0 ? 0 : 1);
+const http = require('node:http');
+const dns = require('node:dns');
+const { RpcClient, singleAddressLookup } = require('../images/stratum/src/rpc');
+async function hostileNodeChecks() {
+  console.log('\na node that is broken, slow, on another network, or not who it claims');
+  // A fake soqucoind whose answers each case sets.
+  let answer = {};
+  let trickle = false;
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const { method, id } = JSON.parse(body);
+      if (trickle) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        const t = setInterval(() => { if (!res.destroyed) res.write(' '); }, 500);
+        res.on('close', () => clearInterval(t));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id, error: null, result: answer[method] }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const pool = new Pool({
+    rpc: { host: '127.0.0.1', port: 1, user: 'u', password: 'p' },
+    ltcRpc: { host: '127.0.0.1', port: 1, user: 'u', password: 'p' },
+    mergedMining: true, payoutAddress: DOGE_ADDR, ltcPayoutAddress: LTC_ADDR, stratumPort: 0,
+    soq: { rpc: { host: '127.0.0.1', port, user: 'u', password: 'p' }, payoutAddress: 'sq1pu43lfdnte6tmfwzhvy8y8j8ga0xghd9j9hhaazczrl2ellfynqtsv270c8' },
+  });
+  pool.log = () => {};
+  pool.chain = 'main';
+  const good = { hash: 'ab'.repeat(32), chainid: 21329, bits: '1a096559', height: 28723, coinbasevalue: 10000000000000 };
+  const refused = async (label, aux, re, info = { chain: 'main' }) => {
+    answer = { getblockchaininfo: info, createauxblock: aux };
+    pool.soq.networkChecked = false;
+    try { await pool.fetchSoqBlock(); check(label, false, 'accepted'); }
+    catch (err) { check(label, re.test(err.message), err.message); }
+  };
+  answer = { getblockchaininfo: { chain: 'main' }, createauxblock: good };
+  const ok = await pool.fetchSoqBlock().catch((e) => e);
+  check('a sound mainnet answer is taken', ok && ok.hash === good.hash, String(ok && ok.message));
+  await refused('a target easier than powLimit is refused (every share would be a candidate)', { ...good, bits: '2100ffff' }, /easier than the chain allows/);
+  await refused('the regtest limit is not accepted on mainnet', { ...good, bits: '207fffff' }, /easier than the chain allows/);
+  await refused('bits that are not 8 hex digits are refused', { ...good, bits: '<b>x</b>' }, /not 8 hex digits/);
+  await refused('a height that is not a positive whole number is refused', { ...good, height: '<img>' }, /height/);
+  await refused('a coinbase value that is not a whole number is refused', { ...good, coinbasevalue: 1.5 }, /coinbase value/);
+  await refused('a node on testnet is refused for a mainnet pool', good, /on test, this pool on main/, { chain: 'test' });
+  await refused('a stagenet node likewise', good, /on stagenet/, { chain: 'stagenet' });
+
+  trickle = true;
+  const t0 = Date.now();
+  const slow = await pool.soq.rpc.call('getblockchaininfo').then(() => null, (e) => e);
+  check('a node trickling bytes is cut off by the hard deadline (5 s), not held open',
+    slow && /longer than 5000 ms/.test(slow.message) && Date.now() - t0 < 7000, `${slow && slow.message} after ${Date.now() - t0} ms`);
+  trickle = false;
+  srv.closeAllConnections();
+  srv.close();
+
+  // Two containers answering to one name: refused, never guessed.
+  const realLookup = dns.lookup;
+  dns.lookup = (host, opts, cb) => cb(null, [{ address: '10.21.0.5', family: 4 }, { address: '10.21.0.9', family: 4 }]);
+  const twice = await new Promise((r) => singleAddressLookup('doge-soqucoin-node_soqucoind_1', {}, (err) => r(err)));
+  dns.lookup = (host, opts, cb) => cb(null, [{ address: '10.21.0.5', family: 4 }]);
+  const once = await new Promise((r) => singleAddressLookup('doge-soqucoin-node_soqucoind_1', {}, (err, addr) => r(err || addr)));
+  const onceAll = await new Promise((r) => singleAddressLookup('x', { all: true }, (err, list) => r(err || list)));
+  dns.lookup = realLookup;
+  check('a name two containers answer to is refused', twice && twice.code === 'EMULTIADDR', String(twice && twice.message));
+  check('a name with one address is used', once === '10.21.0.5', String(once));
+  check('also when Node asks for all addresses', Array.isArray(onceAll) && onceAll[0].address === '10.21.0.5', JSON.stringify(onceAll));
+  const lit = await new Promise((r) => singleAddressLookup('127.0.0.1', {}, (err, addr) => r(err || addr)));
+  check('an IP address needs no lookup', lit === '127.0.0.1', String(lit));
+  check('an ordinary RpcClient keeps the old behaviour', new RpcClient({ host: 'h', port: 1 }).singleAddress === false);
+}
+
+console.log('\nthe push notification names the coin');
+{
+  // sw.js runs in the browser; a VM with a stub `self` is enough to call the
+  // function that writes the notification.
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const ctx = { self: { addEventListener() {} }, console };
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'images/stratum/src/sw.js'), 'utf8'), ctx);
+  const say = (chain, reward) => ctx.describeBlock({ blocks: [{ chain, height: 5, reward, status: 'accepted' }] });
+  const soq = say('SOQ', 10000000000000);
+  check('a Soqucoin block is announced as one, in SOQ', soq.title === 'You found a Soqucoin block!' && /100,000 SOQ/.test(soq.body), `${soq.title} ${soq.body}`);
+  const pep = say('PEP', 1000000000000);
+  check('a Pepecoin block likewise', pep.title === 'You found a Pepecoin block!' && /10,000 PEP/.test(pep.body), `${pep.title} ${pep.body}`);
+  check('a record without a chain is still Dogecoin\'s', say(undefined, 1000000000000).title === 'You found a Dogecoin block!');
+}
+
+hostileNodeChecks().then(() => {
+  console.log(`\n${checks - failures}/${checks} checks passed`);
+  process.exit(failures === 0 ? 0 : 1);
+}, (e) => { console.error('fatal:', e.stack || e.message); process.exit(1); });

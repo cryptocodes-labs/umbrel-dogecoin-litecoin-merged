@@ -46,7 +46,8 @@ const NEW_PEER = {
     { name: 'LTC', label: 'Litecoin', height: 3205062, difficulty: 95864124 },
     { name: 'DOGE', label: 'Dogecoin', height: 6438477, difficulty: 49920142 },
     { name: 'PEP', label: 'Pepecoin', height: 1273944, difficulty: 33767025 },
-    { name: 'SOQ', label: '<img src=x onerror=alert(1)>', height: 28722, difficulty: 1785563 },
+    // Soqucoin with its own best: only the shares made while it was mined.
+    { name: 'SOQ', label: '<img src=x onerror=alert(1)>', height: 28722, difficulty: 1785563, best: 100000 },
   ],
 };
 // A 1.8.1 peer: no `chains`, Dogecoin's difficulty at the top level and
@@ -64,6 +65,15 @@ const OLD_PEER = {
 };
 
 let hostile = false;
+// A peer that sends headers and then one byte a second, for ever: the socket
+// is never silent long enough for a plain socket timeout to fire.
+function tricklePeer() {
+  return http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    const t = setInterval(() => { if (!res.destroyed) res.write(' '); }, 1000);
+    res.on('close', () => clearInterval(t));
+  });
+}
 function peerServer(body) {
   return http.createServer((req, res) => {
     if (req.url !== '/api/status') { res.writeHead(404); res.end(); return; }
@@ -83,8 +93,10 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
 (async () => {
   const a = peerServer(NEW_PEER);
   const b = peerServer(OLD_PEER);
+  const c = tricklePeer();
   const pa = await listen(a);
   const pb = await listen(b);
+  const pc = await listen(c);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doge-peers-'));
 
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'images/stratum/src/server.js')], {
@@ -99,7 +111,7 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
       STALL_RESTART_MINUTES: '0',
       // Three good entries (one dead) and two that must be ignored: a URL and
       // a host with a path in it.
-      PEER_POOLS: `3335=localhost:${pa},3339=localhost:${pb},dead=localhost:1,` +
+      PEER_POOLS: `3335=localhost:${pa},3339=localhost:${pb},dead=localhost:1,slow=localhost:${pc},` +
         'evil=http://example.com:80,bad=localhost:80/api',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -109,7 +121,7 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   child.stderr.on('data', (d) => { log += d; });
   const stop = () => {
     try { child.kill('SIGKILL'); } catch { /* gone */ }
-    a.close(); b.close();
+    a.close(); b.close(); c.closeAllConnections(); c.close();
     fs.rmSync(dir, { recursive: true, force: true });
   };
 
@@ -129,8 +141,8 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   }
 
   console.log('\n/api/peers');
-  check('three peers configured; the URL and the path entries are ignored',
-    peers.map((p) => p.name).join() === '3335,3339,dead', peers.map((p) => p.name).join());
+  check('four peers configured; the URL and the path entries are ignored',
+    peers.map((p) => p.name).join() === '3335,3339,dead,slow', peers.map((p) => p.name).join());
   check('and the log says so', /ignoring "evil=/.test(log) && /ignoring "bad=/.test(log), log.slice(0, 600));
   const [p1, p2, p3] = peers;
   check('the 1.9.0 peer is read with all four coins',
@@ -138,6 +150,10 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
   check('the 1.8.1 peer gets LTC and DOGE from its older fields',
     p2.ok && p2.status.chains.map((c) => `${c.name}:${c.difficulty}`).join() === 'LTC:100000000,DOGE:50000000', JSON.stringify(p2));
   check('the dead one is shown as not answering', p3.ok === false && !!p3.error, JSON.stringify(p3));
+  const p4 = peers[3];
+  check('a peer trickling one byte a second is cut off at the deadline', p4.ok === false && /timed out/.test(p4.error || ''), JSON.stringify(p4));
+  const alive = await fetch(`${BASE}/health`).then((r) => r.status).catch(() => 0);
+  check('and the process survives it', alive === 200 || alive === 503, String(alive));
   check('worker lists and addresses stay behind', !JSON.stringify(peers).includes('DSecretWorkerAddress') &&
     p1.status.workerCount === 1 && p2.status.workerCount === 2);
 
@@ -149,8 +165,10 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(sr
     /^LTC .+ · DOGE .+ · PEP .+ · SOQ .+$/.test(hrw.progressLabel), hrw.progressLabel);
   check('measured from the best share of all ports (2M of DOGE 49.9M = 4.0%)',
     hrw.progressLabel.includes('DOGE 4.0%'), hrw.progressLabel);
-  check('SOQ counts only the ports that mine it (500k of 1.79M), not the 1.8.1 peer\'s 2M',
-    hrw.progressLabel.includes('SOQ 28.0%'), hrw.progressLabel);
+  check('SOQ counts only shares made while SOQ was mined (100k of 1.79M), not the pool best or a non-SOQ port',
+    hrw.progressLabel.includes('SOQ 5.6%'), hrw.progressLabel);
+  check('PEP has no own figure here, so the pool best of the one port that mines it (500k of 33.8M)',
+    hrw.progressLabel.includes('PEP 1.5%'), hrw.progressLabel);
   check('progress is a number between 0 and 1', typeof hrw.progress === 'number' && hrw.progress > 0 && hrw.progress <= 1);
   check('refresh is set (umbrelOS needs it)', typeof hrw.refresh === 'string');
   const st = await (await fetch(`${BASE}/api/widget/stats`)).json();

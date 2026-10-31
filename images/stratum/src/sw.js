@@ -104,7 +104,10 @@ function describeBlock(d) {
     // is the notification that arrives on a phone with the dashboard closed —
     // the whole point of the push — and calling a 12.5 LTC block "13 DOGE"
     // sends the user to the wrong wallet on the one day it matters.
-    const chain = b.chain === 'LTC' ? 'LTC' : 'DOGE';
+    // Pepecoin and Soqucoin are named for themselves too; a record without a
+    // chain is Dogecoin's, as it always was.
+    const NAMES = { LTC: 'Litecoin', DOGE: 'Dogecoin', PEP: 'Pepecoin', SOQ: 'Soqucoin' };
+    const chain = NAMES[b.chain] ? b.chain : 'DOGE';
     // Litecoin rewards are small enough that rounding to whole coins loses
     // real money from the message; Dogecoin rewards are five figures and
     // decimals are noise.
@@ -121,7 +124,7 @@ function describeBlock(d) {
       : b.status === 'submitting' ? 'being submitted'
       : b.status;
     return {
-      title: 'You found a ' + (chain === 'LTC' ? 'Litecoin' : 'Dogecoin') + ' block!',
+      title: 'You found a ' + NAMES[chain] + ' block!',
       body: `${height} · ${reward} · ${state}${who}`,
       tag: 'doge-block',
       sticky: true,

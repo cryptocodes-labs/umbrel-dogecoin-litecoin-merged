@@ -6,6 +6,33 @@
 //
 
 const http = require('node:http');
+const dns = require('node:dns');
+const net = require('node:net');
+
+// For hosts on umbrelOS's shared docker network. Every app's containers sit on
+// that one network, and a name or alias that answers with MORE than one
+// address means another container claims the same name — and would receive
+// the password and the calls meant for this node. Such a name is refused, not
+// guessed at. IPv4 only: container names have no other kind.
+function singleAddressLookup(hostname, options, callback) {
+  const family = net.isIP(hostname);
+  if (family) {
+    return options && options.all ? callback(null, [{ address: hostname, family }]) : callback(null, hostname, family);
+  }
+  dns.lookup(hostname, { all: true, family: 4 }, (err, addrs) => {
+    if (err) return callback(err);
+    const unique = [...new Set(addrs.map((a) => a.address))];
+    if (unique.length !== 1) {
+      const e = new Error(
+        `${hostname} answers with ${unique.length} addresses (${unique.join(', ')}); refusing it, ` +
+          'because another container may be using the same name'
+      );
+      e.code = 'EMULTIADDR';
+      return callback(e);
+    }
+    return options && options.all ? callback(null, [{ address: unique[0], family: 4 }]) : callback(null, unique[0], 4);
+  });
+}
 
 class RpcError extends Error {
   constructor(message, code) {
@@ -16,7 +43,11 @@ class RpcError extends Error {
 }
 
 class RpcClient {
-  constructor({ host, port, user, password, timeout = 15000 }) {
+  // `deadline` (ms) bounds a whole call, unlike `timeout`, which only fires
+  // after a silence: a node trickling bytes would otherwise hold a call open
+  // for ever. `singleAddress` refuses a host name that resolves to more than
+  // one address (see singleAddressLookup). Both off unless asked for.
+  constructor({ host, port, user, password, timeout = 15000, deadline = 0, singleAddress = false }) {
     this.host = host;
     this.port = port;
     this.auth =
@@ -24,6 +55,8 @@ class RpcClient {
         ? Buffer.from(`${user || ''}:${password || ''}`).toString('base64')
         : null;
     this.timeout = timeout;
+    this.deadline = deadline;
+    this.singleAddress = singleAddress;
     this.nextId = 1;
   }
 
@@ -42,8 +75,10 @@ class RpcClient {
       };
       if (this.auth) headers.Authorization = `Basic ${this.auth}`;
 
+      const opts = { host: this.host, port: this.port, method: 'POST', path: '/', headers };
+      if (this.singleAddress) opts.lookup = singleAddressLookup;
       const req = http.request(
-        { host: this.host, port: this.port, method: 'POST', path: '/', headers },
+        opts,
         (res) => {
           const chunks = [];
           let size = 0;
@@ -89,6 +124,12 @@ class RpcClient {
       req.setTimeout(this.timeout, () => {
         req.destroy(new RpcError(`RPC ${method} timed out`, 'ETIMEDOUT'));
       });
+      if (this.deadline) {
+        const timer = setTimeout(() => {
+          req.destroy(new RpcError(`RPC ${method} took longer than ${this.deadline} ms`, 'ETIMEDOUT'));
+        }, this.deadline);
+        req.on('close', () => clearTimeout(timer));
+      }
       req.on('error', (err) => reject(err));
       req.end(body);
     });
@@ -107,4 +148,4 @@ class RpcClient {
   }
 }
 
-module.exports = { RpcClient, RpcError };
+module.exports = { RpcClient, RpcError, singleAddressLookup };

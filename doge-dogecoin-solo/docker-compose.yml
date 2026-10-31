@@ -362,8 +362,10 @@ services:
       # Soqucoin, a third aux chain beside Dogecoin and Pepecoin, PRIVATE
       # merged mode only (ignored with PUBLIC_MERGED=1). Off while SOQ_RPC_HOST
       # or SOQ_PAYOUT_ADDRESS is empty, which is the default. SOQ_RPC_HOST is
-      # the Soqucoin Node app's container, doge-soqucoin-node_soqucoind_1, and
-      # SOQ_PAYOUT_ADDRESS an sq1p… address whose key you hold (SoquShield);
+      # the Soqucoin Node app's container, doge-soqucoin-node_soqucoind_1,
+      # SOQ_RPC_PASSWORD is shown on that app's dashboard (without it the node
+      # refuses every call and Soqucoin stays out of the jobs, said once in the
+      # log), and SOQ_PAYOUT_ADDRESS an sq1p… address whose key you hold (SoquShield);
       # anything else is refused at startup and Soqucoin stays off. A Soqucoin
       # node that is down or syncing only leaves Soqucoin out of the jobs.
       SOQ_RPC_HOST: "${SOQ_RPC_HOST:-}"
