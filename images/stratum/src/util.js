@@ -248,10 +248,49 @@ function segwitToScript(address, hrp) {
   return Buffer.concat([Buffer.from([0x00, prog.length]), Buffer.from(prog)]);
 }
 
+// Soqucoin: Bech32m (BIP350), witness version 1, a 32-byte program — sq1p… on
+// mainnet, testnet and regtest alike, ssq1p… on stagenet (soqucoin
+// doc/pool-integration.md, "Address Format"). The program is the SHA-256 of an
+// ML-DSA-44 public key and the output is OP_1 <32 bytes>. That is the only form
+// accepted here, and deliberately so: soqucoind's createauxblock falls back to
+// a legacy Base58 address, which the script layer cannot spend — Soqucoin's own
+// guide says never to pay one — so this check is what refuses it.
+const SOQ_HRP = { 'soq-main': 'sq', 'soq-test': 'sq', 'soq-regtest': 'sq', 'soq-stagenet': 'ssq' };
+const BECH32M_CONST = 0x2bc830a3;
+
+function soqAddressToScript(address, hrp) {
+  if (typeof address !== 'string') throw new Error('a Soqucoin address must be a string');
+  if (address !== address.toLowerCase() && address !== address.toUpperCase()) {
+    throw new Error('bech32m address mixes upper and lower case');
+  }
+  const addr = address.toLowerCase();
+  const pos = addr.lastIndexOf('1');
+  if (pos < 1 || pos + 7 > addr.length || addr.length > 90) throw new Error('not a bech32m address (sq1p…)');
+  if (addr.slice(0, pos) !== hrp) throw new Error(`bech32m prefix ${addr.slice(0, pos)} is not ${hrp}`);
+  const data = [];
+  for (const ch of addr.slice(pos + 1)) {
+    const v = BECH32_CHARSET.indexOf(ch);
+    if (v < 0) throw new Error(`illegal bech32m character ${JSON.stringify(ch)}`);
+    data.push(v);
+  }
+  const hrpExpand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
+  if (bech32Polymod(hrpExpand.concat(data)) !== BECH32M_CONST) throw new Error('bech32m checksum is wrong (typo?)');
+  if (data[0] !== 1) throw new Error(`witness version ${data[0]} is not a Soqucoin payment address; use an ${hrp}1p… address`);
+  let acc = 0; let bits = 0; const prog = [];
+  for (const v of data.slice(1, -6)) {
+    acc = (acc << 5) | v; bits += 5;
+    while (bits >= 8) { bits -= 8; prog.push((acc >> bits) & 0xff); }
+  }
+  if (bits >= 5 || ((acc << (8 - bits)) & 0xff)) throw new Error('bech32m address has invalid padding');
+  if (prog.length !== 32) throw new Error(`witness program is ${prog.length} bytes, expected 32`);
+  return Buffer.concat([Buffer.from([0x51, 0x20]), Buffer.from(prog)]);
+}
+
 // Returns the scriptPubKey that a coinbase output must carry to pay `address`.
 // Throws with a human-readable reason on anything suspicious — this function is
 // the last line of defence against mining a block whose reward is unspendable.
 function addressToScript(address, chain = 'main') {
+  if (SOQ_HRP[chain]) return soqAddressToScript(address, SOQ_HRP[chain]);
   const hrp = BECH32_HRP[chain];
   if (hrp && typeof address === 'string' && address.toLowerCase().startsWith(`${hrp}1`)) {
     return segwitToScript(address, hrp);
@@ -418,4 +457,5 @@ module.exports = {
   SCRYPT_SHARE_MULTIPLIER,
   HASHES_PER_SHARE_UNIT,
   ADDRESS_VERSIONS,
+  SOQ_HRP,
 };

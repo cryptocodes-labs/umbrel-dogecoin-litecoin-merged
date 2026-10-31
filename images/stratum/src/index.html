@@ -1097,10 +1097,10 @@ let bannerBlockHash = null;
 // a Dogecoin block arrive through the same code, at wildly different heights
 // and rewards, and calling both "DOGE" turns a €2,000 event into a message the
 // user cannot act on — wrong wallet, wrong explorer, wrong node.
-// Pepecoin is a further aux chain beside Dogecoin; records without a chain are
-// Dogecoin's, as they always were.
-function chainOf(b){ return (b && (b.chain === 'LTC' || b.chain === 'PEP')) ? b.chain : 'DOGE'; }
-function coinName(b){ const c = chainOf(b); return c === 'LTC' ? 'Litecoin' : c === 'PEP' ? 'Pepecoin' : 'Dogecoin'; }
+// Pepecoin and Soqucoin are further aux chains beside Dogecoin; records without
+// a chain are Dogecoin's, as they always were.
+function chainOf(b){ return (b && (b.chain === 'LTC' || b.chain === 'PEP' || b.chain === 'SOQ')) ? b.chain : 'DOGE'; }
+function coinName(b){ const c = chainOf(b); return c === 'LTC' ? 'Litecoin' : c === 'PEP' ? 'Pepecoin' : c === 'SOQ' ? 'Soqucoin' : 'Dogecoin'; }
 
 function showBanner(b){
   const verdict = b.status === 'accepted'
@@ -1436,8 +1436,10 @@ async function tick(){
   const ltcBlocks = d.blocks.filter((b) => chainOf(b) === 'LTC' && b.accepted === true).length;
   const dogeBlocks = d.blocks.filter((b) => chainOf(b) === 'DOGE' && b.accepted === true).length;
   const pepBlocks = d.blocks.filter((b) => chainOf(b) === 'PEP' && b.accepted === true).length;
+  const soqBlocks = d.blocks.filter((b) => chainOf(b) === 'SOQ' && b.accepted === true).length;
   $('fBlocksSub').textContent = !d.blocks.length ? 'none yet'
-    : (d.mergedMining ? dogeBlocks + ' DOGE · ' + ltcBlocks + ' LTC · ' + (d.pep || pepBlocks ? pepBlocks + ' PEP · ' : '') : '') +
+    : (d.mergedMining ? dogeBlocks + ' DOGE · ' + ltcBlocks + ' LTC · ' + (d.pep || pepBlocks ? pepBlocks + ' PEP · ' : '') +
+        (d.soq || soqBlocks ? soqBlocks + ' SOQ · ' : '') : '') +
       'last ' + since(d.blocks[0].at) + ' ago';
 
   const eta = (d.totalHashrate > 0 && netHash > 0) ? (60*netHash)/d.totalHashrate : 0;

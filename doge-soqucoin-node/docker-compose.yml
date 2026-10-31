@@ -1,0 +1,154 @@
+version: "3.7"
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app_proxy:
+    environment:
+      # Format is <app-id>_<compose-service-name>_1 — umbrelOS injects that
+      # container_name automatically.
+      APP_HOST: doge-soqucoin-node_app_1
+      APP_PORT: 3000
+      # Every path behind the proxy requires the umbrelOS login.
+      PROXY_AUTH_ADD: "true"
+
+  # ---------------------------------------------------------------------
+  # Soqucoin Core full node
+  # ---------------------------------------------------------------------
+  soqucoind:
+    image: ghcr.io/cryptocodes-labs/umbrel-soqucoin-core:2.6.1-1
+    restart: on-failure
+    stop_grace_period: 5m
+    # A hard ceiling, so this node never shows up big in umbrelOS's memory
+    # view. The chain is small (under 1 GB in October 2026) and DBCACHE below
+    # is 150 MB; soqucoind fits well inside this. If the log ever shows it
+    # being killed for memory, raise this before anything else.
+    mem_limit: 1536m
+    logging: *default-logging
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    ports:
+      # P2P. Safe — and useful — to forward on your router: it lets other
+      # Soqucoin nodes connect to you.
+      - "33388:33388"
+      # No RPC port on the host. The merged-mining pool reaches the RPC over
+      # umbrelOS's shared docker network (doge-soqucoin-node_soqucoind_1:33389);
+      # nothing else needs it, and a port that is not published cannot be
+      # exposed by mistake.
+    environment:
+      RPC_USER: ${APP_SOQUCOIN_NODE_RPC_USER:-umbrel}
+      RPC_PASSWORD: ${APP_SOQUCOIN_NODE_RPC_PASS:-}
+      RPC_PORT: "33389"
+      P2P_PORT: "33388"
+      # Private ranges only — never 0.0.0.0/0. With Docker's default iptables
+      # DNAT the client's real source address is preserved, so a client outside
+      # these ranges (a Tailscale peer, say) is refused. 100.64.0.0/10 is
+      # included for exactly that case.
+      RPC_ALLOW_IP: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,127.0.0.1"
+      # Raised above the Dogecoin Core defaults of 4 threads and a queue of 16,
+      # as for the other nodes: the pool polls this node every two seconds.
+      RPC_THREADS: "8"
+      RPC_WORKQUEUE: "64"
+
+      # --- tuning -------------------------------------------------------
+      # Change a value, then restart the app from umbrelOS.
+      # MB of RAM for the UTXO cache. The chain is young and small; 150 is
+      # plenty and keeps the node well inside mem_limit above.
+      DBCACHE: "150"
+      MAXCONNECTIONS: "64"     # Maximum peers.
+      MAXUPLOADTARGET: "0"     # Daily upload cap in MiB. 0 = unlimited.
+      MAXMEMPOOL: "100"        # Mempool cap in MB.
+      PAR: "0"                 # Script verification threads. 0 = auto.
+      PRUNE: "0"               # Full chain: under 1 GB in October 2026, so pruning buys nothing yet.
+      TXINDEX: "0"             # 1 = full transaction index (block explorers). Incompatible with PRUNE.
+      DISABLE_WALLET: "1"      # 1 = no wallet. Soqucoin's pool guide asks for exactly this: payouts are signed elsewhere.
+      ENABLE_MINING: "1"       # 1 = serve createauxblock/submitauxblock to the pool. Mainnet defaults to off.
+      PEERBLOOMFILTERS: "0"    # 1 = serve BIP37 SPV clients (a privacy and DoS trade-off).
+
+      # --- Tor ----------------------------------------------------------
+      TOR_ENABLED: "0"         # 1 = route outbound peer connections through Umbrel's Tor proxy.
+      TOR_ONLY: "0"            # 1 = Tor exclusively (slower initial sync, maximum privacy).
+      TOR_PROXY_IP: ${TOR_PROXY_IP:-}
+      TOR_PROXY_PORT: ${TOR_PROXY_PORT:-9050}
+
+      # --- escape hatches ----------------------------------------------
+      PROXY: ""                # Explicit SOCKS5 proxy, overrides the Tor settings above.
+      ONLYNET: ""              # e.g. onion, ipv4
+      EXTRA_ARGS: ""           # Any extra soqucoind flags.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 5m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Needed only to drop from root to uid 1000 and to fix data ownership
+      # on first start.
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+
+  # ---------------------------------------------------------------------
+  # Dashboard + Umbrel widgets
+  # ---------------------------------------------------------------------
+  app:
+    image: ghcr.io/cryptocodes-labs/umbrel-dogecoin-ui:1.1.0
+    restart: on-failure
+    logging: *default-logging
+    depends_on:
+      - soqucoind
+    volumes:
+      # Read-only: the dashboard never writes to the blockchain directory.
+      - ${APP_DATA_DIR}/data:/data:ro
+    environment:
+      PORT: "3000"
+      # Full container name, not the bare service name: all Umbrel apps share one
+      # docker network, so service aliases can collide across apps.
+      RPC_HOST: doge-soqucoin-node_soqucoind_1
+      RPC_PORT: "33389"
+      P2P_PORT: "33388"
+      RPC_USER: ${APP_SOQUCOIN_NODE_RPC_USER:-umbrel}
+      RPC_PASSWORD: ${APP_SOQUCOIN_NODE_RPC_PASS:-}
+      DATA_DIR: /data
+      CHAIN_DIR: /data/.soqucoin
+      DEVICE_DOMAIN_NAME: ${DEVICE_DOMAIN_NAME:-umbrel.local}
+      # The dashboard is shared with the Dogecoin and Litecoin nodes; these
+      # name the coin it shows.
+      COIN_NAME: "Soqucoin"
+      CORE_NAME: "Soqucoin Core"
+      DAEMON_NAME: "soqucoind"
+      COIN_GLYPH: "S"
+      CHAIN_SIZE_HINT: "under 1 GB (October 2026)"
+      ACCENT: "#2f6fb0"
+      ACCENT_SOFT: "#a9c9ea"
+      ACCENT_DEEP: "#1b4370"
+      DAEMON_CONTAINER: "doge-soqucoin-node_soqucoind_1"
+      # Only these peers may fetch the RPC password from the dashboard. Both
+      # names point at our app_proxy container — the one that enforces the
+      # umbrelOS login. umbrelOS injects the container_name, and its own
+      # fragment sets the hostname; either may be what DNS answers on. Every
+      # other app on the shared docker network gets a 403.
+      CREDENTIALS_ALLOW_HOST: "doge-soqucoin-node_app_proxy_1,app_proxy_doge-soqucoin-node"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

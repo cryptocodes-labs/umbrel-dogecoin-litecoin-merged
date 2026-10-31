@@ -205,6 +205,25 @@ const config = {
       : null,
   pepPollMs: Math.max(500, num('PEP_POLL_MS', 2000)),
 
+  // Soqucoin, a third aux chain beside Dogecoin and Pepecoin. On only when
+  // SOQ_RPC_HOST and SOQ_PAYOUT_ADDRESS are both set, and only in PRIVATE
+  // merged mode (with PUBLIC_MERGED=1 it is ignored and the log says so).
+  // Every Soqucoin block pays SOQ_PAYOUT_ADDRESS, an sq1p… address. soqucoind
+  // must run with enablemining=1, which mainnet does not default to.
+  soq:
+    process.env.SOQ_RPC_HOST && (process.env.SOQ_PAYOUT_ADDRESS || '').trim()
+      ? {
+          rpc: {
+            host: process.env.SOQ_RPC_HOST,
+            port: num('SOQ_RPC_PORT', 33389),
+            user: process.env.SOQ_RPC_USER || 'umbrel',
+            password: process.env.SOQ_RPC_PASSWORD || '',
+          },
+          payoutAddress: (process.env.SOQ_PAYOUT_ADDRESS || '').trim(),
+        }
+      : null,
+  soqPollMs: Math.max(500, num('SOQ_POLL_MS', 2000)),
+
   stratumPort: STRATUM_PORT,
   // Stratum-space difficulties (scrypt, so one share costs D * 2^16 hashes).
   // 2048 lands a 11 MH/s miner at ~12s per share and a 70 MH/s miner at ~2s,
@@ -328,9 +347,13 @@ if (config.publicMerged && !config.mergedMining) {
 // profile is only useful if it actually reaches the pool, and asserting that
 // from outside the process is the only test that proves it.
 if (process.env.DUMP_CONFIG === '1') {
-  // ltcRpc goes the same way as rpc: it carries a password. So does pep.
-  const { rpc, payoutAddress, ltcRpc, ltcPayoutAddress, pep, ...safe } = config;
-  console.log(`CONFIG ${JSON.stringify({ ...safe, pep: pep ? { host: pep.rpc.host, port: pep.rpc.port } : null })}`);
+  // ltcRpc goes the same way as rpc: it carries a password. So do pep and soq.
+  const { rpc, payoutAddress, ltcRpc, ltcPayoutAddress, pep, soq, ...safe } = config;
+  console.log(`CONFIG ${JSON.stringify({
+    ...safe,
+    pep: pep ? { host: pep.rpc.host, port: pep.rpc.port } : null,
+    soq: soq ? { host: soq.rpc.host, port: soq.rpc.port } : null,
+  })}`);
   process.exit(0);
 }
 

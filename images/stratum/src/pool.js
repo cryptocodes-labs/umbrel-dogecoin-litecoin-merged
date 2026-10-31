@@ -15,7 +15,7 @@ const { EventEmitter } = require('node:events');
 
 const { RpcClient } = require('./rpc');
 const { Job, validateShareAsync, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE } = require('./job');
-const { MergedJob, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID } = require('./merged');
+const { MergedJob, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID, SOQ_CHAIN_ID } = require('./merged');
 const pm = require('./public-merged');
 const u = require('./util');
 
@@ -131,6 +131,8 @@ class Pool extends EventEmitter {
     this.pep = null;
     if (this.merged && config.pep && config.pep.rpc && config.pep.payoutAddress) {
       this.pep = {
+        name: 'PEP',
+        label: 'Pepecoin',
         rpc: new RpcClient({ ...config.pep.rpc, timeout: 5000 }),
         submitRpc: new RpcClient({ ...config.pep.rpc, timeout: 180000 }),
         payoutAddress: config.pep.payoutAddress,
@@ -139,6 +141,36 @@ class Pool extends EventEmitter {
         error: null,
         polling: false,
       };
+    }
+
+    // Soqucoin: a third aux chain beside Dogecoin and Pepecoin, under the same
+    // Litecoin parent, optional in exactly the same way (its own timer, a
+    // five-second timeout, left out of the jobs while soqucoind is away).
+    //
+    // PRIVATE merged mode only. There soqucoind builds the whole Soqucoin block
+    // with createauxblock, including the PAT block attestation that a coinbase
+    // built from getblocktemplate would have to copy over by hand (soqucoin
+    // doc/pool-integration.md, "Block attestation (PAT)"). A public port that
+    // pays every miner at its own SOQ address needs that copy and is not built,
+    // so SOQ_* is ignored there — said at startup, never silently.
+    this.soq = null;
+    this.soqIgnored = null;
+    if (this.merged && config.soq && config.soq.rpc && config.soq.payoutAddress) {
+      if (this.publicMerged) {
+        this.soqIgnored = 'Soqucoin is merge-mined on the private port only; SOQ_* is ignored with PUBLIC_MERGED=1';
+      } else {
+        this.soq = {
+          name: 'SOQ',
+          label: 'Soqucoin',
+          rpc: new RpcClient({ ...config.soq.rpc, timeout: 5000 }),
+          submitRpc: new RpcClient({ ...config.soq.rpc, timeout: 180000 }),
+          payoutAddress: config.soq.payoutAddress,
+          block: null,
+          unavailableSince: null,
+          error: null,
+          polling: false,
+        };
+      }
     }
 
     this.jobs = new Map();
@@ -174,9 +206,11 @@ class Pool extends EventEmitter {
       // whether the aux longpoll below is earning its keep.
       auxTipMissed: 0,
       auxTipMissedAt: null,
-      // The same for Pepecoin, which is polled only.
+      // The same for Pepecoin and Soqucoin, which are polled only.
       pepTipMissed: 0,
       pepTipMissedAt: null,
+      soqTipMissed: 0,
+      soqTipMissedAt: null,
     };
     // How often dogecoind's longpoll came back, and how often that was actually
     // a new tip rather than a mempool update. Both are surfaced: zero tip moves
@@ -250,6 +284,8 @@ class Pool extends EventEmitter {
     // otherwise the pool starts on Litecoin and Dogecoin and picks Pepecoin up
     // on a later poll. pollPep never throws.
     if (this.pep) await this.pollPep();
+    // Soqucoin likewise.
+    if (this.soq) await this.pollSoq();
     await this.refreshTemplate('startup');
     await this.reconcileBlocks();
 
@@ -378,6 +414,10 @@ class Pool extends EventEmitter {
       this.pepTimer = setInterval(() => this.pollPep(), this.config.pepPollMs || 2000);
       this.pepTimer.unref();
     }
+    if (this.soq) {
+      this.soqTimer = setInterval(() => this.pollSoq(), this.config.soqPollMs || 2000);
+      this.soqTimer.unref();
+    }
     this.longPollLoop();
     if (this.wantsAuxLongpoll()) this.auxLongPollLoop();
     this.log(`stratum listening on 0.0.0.0:${this.config.stratumPort}`);
@@ -426,6 +466,24 @@ class Pool extends EventEmitter {
         // instead of refusing to start the Litecoin and Dogecoin pool.
         this.log(`Pepecoin DISABLED: PEP_PAYOUT_ADDRESS is not a ${this.pepChain} address (${err.message})`);
         this.pep = null;
+      }
+    }
+
+    if (this.soqIgnored) this.log(this.soqIgnored);
+    if (this.soq) {
+      // Soqucoin follows Dogecoin's network too (regtest: sq1p…, the same
+      // prefix as mainnet). Checked here, not by soqucoind: its createauxblock
+      // would take a Base58 address and mine to an output nobody can spend.
+      this.soqChain = `soq-${this.chain}`;
+      try {
+        this.soqPayoutScript = u.addressToScript(this.soq.payoutAddress, this.soqChain);
+        this.log(
+          `merged mining: aux Soqucoin paying ${this.soq.payoutAddress} — optional: while soqucoind ` +
+            'is unreachable, jobs carry the other chains only'
+        );
+      } catch (err) {
+        this.log(`Soqucoin DISABLED: SOQ_PAYOUT_ADDRESS is not a ${this.soqChain} address (${err.message})`);
+        this.soq = null;
       }
     }
 
@@ -595,6 +653,51 @@ class Pool extends EventEmitter {
     return block;
   }
 
+  // Soqucoin's aux block: pollPep's twin, private mode only (see the
+  // constructor), so always createauxblock. A changed hash rebuilds the job
+  // without clean_jobs; soqucoind going away drops Soqucoin from the next job.
+  async pollSoq() {
+    const soq = this.soq;
+    if (!soq || soq.polling) return;
+    soq.polling = true;
+    const had = soq.block ? soq.block.hash : null;
+    try {
+      const block = await this.fetchSoqBlock();
+      if (soq.unavailableSince) {
+        this.log(`the Soqucoin node is answering again after ${
+          Math.round((Date.now() - soq.unavailableSince) / 1000)
+        }s`);
+      }
+      soq.unavailableSince = null;
+      soq.error = null;
+      soq.block = block;
+    } catch (err) {
+      if (!soq.unavailableSince) {
+        soq.unavailableSince = Date.now();
+        this.log(`Soqucoin left out of new jobs: ${err.message}. The other chains are mined as before.`);
+      }
+      soq.error = err.message;
+      soq.block = null;
+    } finally {
+      soq.polling = false;
+    }
+    const now = soq.block ? soq.block.hash : null;
+    if (now !== had && this.currentJob && !this.refreshInFlight) {
+      this.refreshTemplate(now ? 'soqucoin block' : 'soqucoin gone').catch(() => {});
+    }
+  }
+
+  async fetchSoqBlock() {
+    const block = await this.soq.rpc.call('createauxblock', [this.soq.payoutAddress]);
+    if (!block || !/^[0-9a-f]{64}$/.test(String(block.hash))) {
+      throw new Error('soqucoind createauxblock did not return an aux block hash');
+    }
+    if (block.chainid !== SOQ_CHAIN_ID) {
+      throw new Error(`the node at SOQ_RPC_HOST reports chain id ${block.chainid}, not Soqucoin's ${SOQ_CHAIN_ID}`);
+    }
+    return block;
+  }
+
   // Ask the node about every block we recorded but never resolved.
   //
   // A crash, a power cut or a kill during the submit-retry window leaves a
@@ -616,7 +719,13 @@ class Pool extends EventEmitter {
       // Litecoin hash gets an honest "not found", which would rewrite a good
       // block to "the node does not have this block" on every restart.
       const rpc =
-        b.chain === 'LTC' ? this.ltcRpc : b.chain === 'PEP' ? this.pep && this.pep.rpc : this.rpc;
+        b.chain === 'LTC'
+          ? this.ltcRpc
+          : b.chain === 'PEP'
+            ? this.pep && this.pep.rpc
+            : b.chain === 'SOQ'
+              ? this.soq && this.soq.rpc
+              : this.rpc;
       if (!rpc) continue;
       try {
         const block = await rpc.call('getblock', [b.hash]);
@@ -655,6 +764,7 @@ class Pool extends EventEmitter {
   stop() {
     clearInterval(this.pollTimer);
     clearInterval(this.pepTimer);
+    clearInterval(this.soqTimer);
     clearInterval(this.sampleTimer);
     clearInterval(this.saveTimer);
     clearInterval(this.pingTimer);
@@ -1101,14 +1211,19 @@ class Pool extends EventEmitter {
     const pepBlock = this.pep && this.pep.block ? this.pep.block : null;
     const pepHash = pepBlock ? pepBlock.hash : null;
     const pepChanged = !!this.currentJob && (this.currentJob.pepHash || null) !== pepHash;
+    // Soqucoin in the same way (private mode only; this.soq is null otherwise).
+    const soqBlock = this.soq && this.soq.block ? this.soq.block : null;
+    const soqHash = soqBlock ? soqBlock.hash : null;
+    const soqChanged = !!this.currentJob && (this.currentJob.soqHash || null) !== soqHash;
 
-    if (!isNewBlock && !pepChanged) {
+    if (!isNewBlock && !pepChanged && !soqChanged) {
       const ageMs = Date.now() - this.currentJob.createdAt;
       const gainedValue = template.coinbasevalue > this.currentJob.coinbaseValue;
       if (!gainedValue && ageMs < this.config.jobRebuildMs) return;
     }
 
     const extraAux = pepBlock ? [{ name: 'PEP', chainId: PEP_CHAIN_ID, block: pepBlock }] : [];
+    if (soqBlock) extraAux.push({ name: 'SOQ', chainId: SOQ_CHAIN_ID, block: soqBlock });
     const id = (++this.jobCounter).toString(16).padStart(8, '0');
     const job = this.publicMerged
       ? new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock, {
@@ -1117,6 +1232,7 @@ class Pool extends EventEmitter {
         })
       : new MergedJob(id, template, this.ltcPayoutScript, this.config.coinbaseTag, auxBlock, { extraAux });
     job.pepHash = pepHash;
+    job.soqHash = soqHash;
     // Public mode: the Dogecoin template every miner's own aux block is built
     // from. Kept on the job so a variant is always built from the same
     // template as the job it belongs to. Pepecoin's likewise.
@@ -1142,6 +1258,7 @@ class Pool extends EventEmitter {
           `${job.auxDifficulty.toFixed(0)}), Litecoin height ${job.height} (difficulty ` +
           `${job.networkDifficulty.toFixed(0)})` +
           (pepBlock ? `, Pepecoin height ${pepBlock.height}` : '') +
+          (soqBlock ? `, Soqucoin height ${soqBlock.height}` : '') +
           ` (${reason})`
       );
     }
@@ -2218,6 +2335,26 @@ class Pool extends EventEmitter {
       return;
     }
     const auxPowHex = job.auxPowHex(result.header, result.coinbase, a.chainId);
+
+    // Soqucoin: private mode only, so always the proof for the block soqucoind
+    // built itself with createauxblock.
+    if (a.name === 'SOQ') {
+      const soq = this.soq;
+      if (!soq) return; // switched off since this job was built
+      await this.submitCandidate({
+        chain: a.name,
+        height: a.height,
+        hash: a.hash,
+        hex: auxPowHex,
+        hexLabel: `AUXPOW HEX chain=${a.name} height=${a.height} auxhash=${a.hash}`,
+        reward: a.value,
+        address: soq.payoutAddress,
+        worker: client.worker,
+        submit: () => this.submitSoqAuxWithRetries(a.hash, auxPowHex, a.height),
+      });
+      return;
+    }
+
     const pep = this.pep;
     if (!pep) return; // switched off since this job was built
 
@@ -2271,6 +2408,30 @@ class Pool extends EventEmitter {
         }
         lastError = err;
         this.log(`Pepecoin submitauxblock attempt ${attempt + 1}/${delays.length} for height ${height} failed: ${err.message}`);
+      }
+    }
+    throw lastError;
+  }
+
+  // The same for soqucoind, whose aux RPCs are Dogecoin's: the same "block
+  // hash unknown" once the tip it was built on has moved.
+  async submitSoqAuxWithRetries(auxHash, auxPowHex, height) {
+    const delays = [0, 1000, 3000, 10000, 30000, 60000];
+    let lastError = null;
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (delays[attempt] > 0) await sleep(delays[attempt]);
+      try {
+        const ok = await this.soq.submitRpc.call('submitauxblock', [auxHash, auxPowHex]);
+        return ok === true ? null : 'soqucoind refused the auxpow proof';
+      } catch (err) {
+        if (/block hash unknown/i.test(String(err.message))) {
+          this.stats.soqTipMissed++;
+          this.stats.soqTipMissedAt = Date.now();
+          this.log(`the Soqucoin tip moved before the proof for height ${height} could be submitted`);
+          return 'the Soqucoin tip moved before the proof was submitted';
+        }
+        lastError = err;
+        this.log(`Soqucoin submitauxblock attempt ${attempt + 1}/${delays.length} for height ${height} failed: ${err.message}`);
       }
     }
     throw lastError;
@@ -2615,6 +2776,18 @@ class Pool extends EventEmitter {
             tipMissedAt: this.stats.pepTipMissedAt || null,
           }
         : null,
+      // Soqucoin likewise, private mode only.
+      soq: this.soq
+        ? {
+            height: this.soq.block ? this.soq.block.height : null,
+            hash: this.soq.block ? this.soq.block.hash : null,
+            unavailableSince: this.soq.unavailableSince || null,
+            error: this.soq.error || null,
+            tipMissed: this.stats.soqTipMissed || 0,
+            tipMissedAt: this.stats.soqTipMissedAt || null,
+          }
+        : null,
+      soqIgnored: this.soqIgnored || null,
       accepted: this.stats.accepted,
       rejected: this.stats.rejected,
       rejectReasons: this.stats.rejectReasons,

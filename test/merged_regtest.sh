@@ -24,6 +24,8 @@ DOGE_PEER_RPC="$((DOGE_RPC + 2))"
 PEP_RPC="${PEP_RPC:-24655}"
 PEP_P2P="$((PEP_RPC + 1))"
 PEP_PEER_RPC="$((PEP_RPC + 2))"
+SOQ_RPC="${SOQ_RPC:-24755}"
+SOQ_P2P="$((SOQ_RPC + 1))"
 
 cleanup() {
   for d in "${WORK}/ltc" "${WORK}/ltcpeer"; do
@@ -36,6 +38,8 @@ cleanup() {
     -rpcuser=test -rpcpassword=test stop >/dev/null 2>&1 || true
   "${WORK}/pepecoin/bin/pepecoin-cli" -regtest -datadir="${WORK}/peppeer" -rpcport="${PEP_PEER_RPC}" \
     -rpcuser=peer -rpcpassword=peer stop >/dev/null 2>&1 || true
+  "${WORK}/soqucoin/soqucoin-cli" -regtest -datadir="${WORK}/soq" -rpcport="${SOQ_RPC}" \
+    -rpcuser=test -rpcpassword=test stop >/dev/null 2>&1 || true
   sleep 2
   rm -rf "${WORK}"
 }
@@ -73,6 +77,24 @@ fetch dogecoin "${REPO_ROOT}/images/core/Dockerfile" DOGECOIN_VERSION \
   https://github.com/dogecoin/dogecoin/releases/download
 fetch pepecoin "${REPO_ROOT}/images/pep-core/Dockerfile" PEPECOIN_VERSION \
   https://github.com/pepecoinppc/pepecoin/releases/download
+
+# Soqucoin names its release files differently (soqucoin-v2.6.1-linux-x64.tar.gz,
+# both binaries at the root), so it gets its own fetch, pinned the same way.
+SOQ_DOCKERFILE="${REPO_ROOT}/images/soq-core/Dockerfile"
+SOQ_VERSION="$(pin "${SOQ_DOCKERFILE}" SOQUCOIN_VERSION)"
+SOQ_SHA="$(pin "${SOQ_DOCKERFILE}" "${SHA_ARG}")"
+case "${ARCH}" in x86_64-linux-gnu) SOQ_ARCH=linux-x64 ;; *) SOQ_ARCH=linux-arm64 ;; esac
+SOQ_TARBALL="soqucoin-v${SOQ_VERSION}-${SOQ_ARCH}.tar.gz"
+SOQ_CACHE="${TMPDIR:-/tmp}/${SOQ_TARBALL}"
+if [[ ! -f "${SOQ_CACHE}" ]]; then
+  curl -fsSL --retry 3 -o "${SOQ_CACHE}" \
+    "https://github.com/soqucoin/soqucoin/releases/download/v${SOQ_VERSION}/${SOQ_TARBALL}"
+fi
+if [[ "$(sha256 "${SOQ_CACHE}")" != "${SOQ_SHA}" ]]; then
+  echo "${SOQ_TARBALL} does not match the SHA256 pinned in images/soq-core/Dockerfile"; exit 1
+fi
+mkdir -p "${WORK}/soqucoin" && tar -xzf "${SOQ_CACHE}" -C "${WORK}/soqucoin"
+echo "soqucoin ${SOQ_VERSION} (sha256 verified)"
 
 LTCD="${WORK}/litecoin/bin/litecoind"
 LTCC="${WORK}/litecoin/bin/litecoin-cli"
@@ -139,6 +161,18 @@ pep_cli generate 80 >/dev/null
   -rpcuser=peer -rpcpassword=peer -rpcport="${PEP_PEER_RPC}" -connect="127.0.0.1:${PEP_P2P}" -daemon >/dev/null
 for _ in $(seq 1 60); do [[ "$(pep_cli getconnectioncount 2>/dev/null)" == "1" ]] && break; sleep 1; done
 
+# Soqucoin regtest: its own ports (its network magic is Dogecoin regtest's),
+# no peer and no wallet. Regtest mines on demand, so createauxblock answers
+# without a peer or a recent tip; the suite itself mines the first 25 blocks,
+# past the auxpow start height of 20, to an sq1p address it makes up.
+mkdir -p "${WORK}/soq"
+"${WORK}/soqucoin/soqucoind" -regtest -datadir="${WORK}/soq" -server=1 -listen=1 -dnsseed=0 \
+  -bind=127.0.0.1 -port="${SOQ_P2P}" -rpcuser=test -rpcpassword=test -rpcport="${SOQ_RPC}" \
+  -txindex=1 -disablewallet=1 -daemon >/dev/null
+soq_cli() { "${WORK}/soqucoin/soqucoin-cli" -regtest -datadir="${WORK}/soq" -rpcport="${SOQ_RPC}" -rpcuser=test -rpcpassword=test "$@"; }
+for _ in $(seq 1 60); do soq_cli getblockcount >/dev/null 2>&1 && break; sleep 1; done
+echo "$(soq_cli -version | head -1)"
+
 echo "litecoin height $(ltc_cli getblockcount), dogecoin height $(doge_cli getblockcount), dogecoin peers $(doge_cli getconnectioncount), pepecoin height $(pep_cli getblockcount), pepecoin peers $(pep_cli getconnectioncount)"
 
 STRATUM_PORT="${STRATUM_PORT:-24600}"
@@ -164,6 +198,14 @@ if [[ -f "${REPO_ROOT}/test/pep_merged_regtest.js" ]]; then
   echo
   echo "== pep_merged_regtest"
   node "${REPO_ROOT}/test/pep_merged_regtest.js" "${LTC_RPC}" "${DOGE_RPC}" "${PEP_RPC}" || status=1
+fi
+# Soqucoin as the third aux chain, through the pool. Before the Pepecoin pool
+# suite, which stops pepecoind; this one stops soqucoind at its end.
+if [[ -f "${REPO_ROOT}/test/soq_pool_regtest.js" ]]; then
+  sleep 6
+  echo
+  echo "== soq_pool_regtest"
+  node "${REPO_ROOT}/test/soq_pool_regtest.js" "${LTC_RPC}" "${DOGE_RPC}" "${PEP_RPC}" "${SOQ_RPC}" "$((STRATUM_PORT + 100))" || status=1
 fi
 # Last, because its final part stops pepecoind on purpose.
 if [[ -f "${REPO_ROOT}/test/pep_pool_regtest.js" ]]; then

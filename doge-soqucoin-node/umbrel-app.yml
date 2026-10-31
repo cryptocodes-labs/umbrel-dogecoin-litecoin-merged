@@ -1,0 +1,87 @@
+manifestVersion: 1
+id: doge-soqucoin-node
+category: bitcoin
+name: Soqucoin Node
+version: "2.6.1-1"
+tagline: Run your own Soqucoin node, powered by Soqucoin Core
+description: >-
+  Run a Soqucoin node on your Umbrel, powered by the official Soqucoin Core release binaries.
+
+
+  Soqucoin is a Scrypt chain built on Dogecoin Core, with ML-DSA-44 (Dilithium) signatures, and it is
+  merge-mined under Litecoin beside Dogecoin. A merged-mining pool needs a Soqucoin node to hand out the
+  Soqucoin block it commits to: this app is that node, on your own machine, with its mining RPCs on
+  (enablemining=1) for the DOGE + LTC Solo app.
+
+
+  The wallet is disabled: Soqucoin's own pool guide asks for exactly that, and a node without a wallet has
+  nothing to steal. Rewards go straight to the sq1p… address you give the pool.
+
+
+  The JSON-RPC port is not published on your network; other Umbrel apps reach it over umbrelOS's own
+  network. P2P is published so other Soqucoin nodes can connect. The node is limited to 1.5 GB of memory.
+
+
+  Soqucoin is young (mainnet since 13 October 2026) and releases often. Install a new release when it
+  appears: Soqucoin asks every node to, and a node that falls behind a scheduled rule follows a chain the
+  network refuses.
+developer: Soqucoin developers
+website: https://soqu.org
+dependencies: []
+repo: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
+support: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/issues
+port: 33380
+icon: https://raw.githubusercontent.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged/main/doge-soqucoin-node/icon.svg
+gallery: []
+path: ""
+defaultPassword: ""
+deterministicPassword: false
+torOnly: false
+installSize: 3000000000
+releaseNotes: >-
+  First release. Soqucoin Core 2.6.1 from the official release binaries, checked against the SHA256 sums
+  of the release. 2.6.1 knows the rule that starts at mainnet block 67,000 (every block carries chain id
+  0x5351), which every node needs before that height.
+widgets:
+  - id: "sync"
+    type: "text-with-progress"
+    refresh: "5s"
+    endpoint: "app:3000/api/widget/sync"
+    link: ""
+    example:
+      type: "text-with-progress"
+      link: ""
+      title: "Blockchain sync"
+      text: "83%"
+      progressLabel: "In progress"
+      progress: 0.83
+  - id: "stats"
+    type: "four-stats"
+    refresh: "10s"
+    endpoint: "app:3000/api/widget/stats"
+    link: ""
+    example:
+      type: "four-stats"
+      link: ""
+      items:
+        - title: "Connections"
+          text: "16"
+          subtext: "peers"
+        - title: "Mempool"
+          text: "4"
+          subtext: "txs"
+        - title: "Hashrate"
+          text: "150"
+          subtext: "TH/s"
+        - title: "Blockchain size"
+          text: "1"
+          subtext: "GB"
+backupIgnore:
+  - data/.soqucoin/blocks
+  - data/.soqucoin/chainstate
+  - data/.soqucoin/indexes
+  - data/.soqucoin/testnet3
+  - data/.soqucoin/regtest
+  - data/.soqucoin/debug.log
+submitter: Andreas
+submission: https://github.com/cryptocodes-labs/umbrel-dogecoin-litecoin-merged
