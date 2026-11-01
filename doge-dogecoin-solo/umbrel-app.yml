@@ -6,7 +6,7 @@ category: bitcoin
 # which loses the one word that says what the app is for. Four coins only fit
 # without the spaces: 16 characters.
 name: DOGE+LTC+PEP+SOQ
-version: "1.9.3"
+version: "1.10.0"
 tagline: Solo mine Dogecoin, or merge-mine it with Litecoin, Pepecoin and Soqucoin, on your own nodes
 description: >-
   A stratum server that turns your Dogecoin node into a solo mining pool of one.
@@ -58,16 +58,23 @@ deterministicPassword: false
 torOnly: false
 installSize: 200000000
 releaseNotes: >-
-  The dashboard lists every miner on this Umbrel, including those on the other pool containers it reads
+  Soqucoin on the public merged port too, non-custodial at 1%: a public miner adds an sq1p… address to
+  its username, LTC.DOGE[.PEP][.SOQ].rig (PEP and SOQ both optional, in either order), and a Soqucoin
+  block it finds pays 99% to that address and 1% to SOQ_PAYOUT_ADDRESS, straight from the coinbase.
+  The pool starts from soqucoind's own coinbase and only splits the payout; soqucoind checks every
+  template as a block proposal before any miner gets SOQ work, and SOQ is left out (logged, never mined
+  wrongly) when the node is down, has no peers or would refuse the block. A miner without an SOQ address
+  mines exactly as before. Soqucoin rewards can be spent after 288 blocks (about 4.8 hours). On this
+  private port nothing changes. The image is pinned by digest.
+
+
+  Earlier in 1.9: the dashboard lists every miner on this Umbrel, including those on the other pool containers it reads
   (PEER_POOLS), grouped by the addresses they are paid at: hashrate now and its average over the last hour,
   day and week, best share on this connection and ever, shares, last share and up-time. A miner that
   dropped out in the last week stays in the list as offline. Tap any miner, on any port, for its last 24
   hours. On the private port a long LTC.DOGE.PEP.rig username is now shown as rig@address, so two rigs of
   one owner no longer share one name and one history. Miners' IP addresses never leave the pool that saw
-  them. The image is pinned by digest.
-
-
-  Earlier in 1.9: a card for every coin the pool mines (LTC, DOGE, PEP, SOQ) with its difficulty, how
+  them. Also in 1.9: a card for every coin the pool mines (LTC, DOGE, PEP, SOQ) with its difficulty, how
   close the best share came, the expected wait, the chance in a year and where a block pays.
 
 

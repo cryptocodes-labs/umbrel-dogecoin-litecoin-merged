@@ -17,7 +17,7 @@
 #
 set -euo pipefail
 
-IMG=ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.9.3@sha256:6fe2810508ecbac13abbe228872098533b9aa509afccd48f388aedd24105085e
+IMG=ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.10.0@sha256:fc1839d389c7899dad5eca25b8685a13d0465469387bacb9b476456527421d83
 APP=doge-dogecoin-solo_app_1
 DIR=~/doge-public
 
