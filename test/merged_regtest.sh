@@ -162,13 +162,15 @@ pep_cli generate 80 >/dev/null
 for _ in $(seq 1 60); do [[ "$(pep_cli getconnectioncount 2>/dev/null)" == "1" ]] && break; sleep 1; done
 
 # Soqucoin regtest: its own ports (its network magic is Dogecoin regtest's),
-# no peer and no wallet. Regtest mines on demand, so createauxblock answers
-# without a peer or a recent tip; the suite itself mines the first 25 blocks,
-# past the auxpow start height of 20, to an sq1p address it makes up.
+# no peer. Regtest mines on demand, so createauxblock answers without a peer
+# or a recent tip; the suite itself mines the first 25 blocks, past the auxpow
+# start height of 20, to an sq1p address it makes up. With a wallet: the
+# public part of soq_pool_regtest.js needs ordinary sq1p spends in a block
+# (they are what the PAT commitment attests), and spending needs a key.
 mkdir -p "${WORK}/soq"
 "${WORK}/soqucoin/soqucoind" -regtest -datadir="${WORK}/soq" -server=1 -listen=1 -dnsseed=0 \
   -bind=127.0.0.1 -port="${SOQ_P2P}" -rpcuser=test -rpcpassword=test -rpcport="${SOQ_RPC}" \
-  -txindex=1 -disablewallet=1 -daemon >/dev/null
+  -txindex=1 -disablewallet=0 -daemon >/dev/null
 soq_cli() { "${WORK}/soqucoin/soqucoin-cli" -regtest -datadir="${WORK}/soq" -rpcport="${SOQ_RPC}" -rpcuser=test -rpcpassword=test "$@"; }
 for _ in $(seq 1 60); do soq_cli getblockcount >/dev/null 2>&1 && break; sleep 1; done
 echo "$(soq_cli -version | head -1)"

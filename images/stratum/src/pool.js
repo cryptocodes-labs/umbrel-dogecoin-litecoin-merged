@@ -17,6 +17,7 @@ const { RpcClient } = require('./rpc');
 const { Job, validateShareAsync, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE } = require('./job');
 const { MergedJob, LTC_RULES, DOGE_CHAIN_ID, PEP_CHAIN_ID, SOQ_CHAIN_ID } = require('./merged');
 const pm = require('./public-merged');
+const aux = require('./auxpow');
 const u = require('./util');
 
 const MAX_LINE_BYTES = 16 * 1024;
@@ -151,36 +152,34 @@ class Pool extends EventEmitter {
     // Litecoin parent, optional in exactly the same way (its own timer, a
     // five-second timeout, left out of the jobs while soqucoind is away).
     //
-    // PRIVATE merged mode only. There soqucoind builds the whole Soqucoin block
-    // with createauxblock, including the PAT block attestation that a coinbase
-    // built from getblocktemplate would have to copy over by hand (soqucoin
-    // doc/pool-integration.md, "Block attestation (PAT)"). A public port that
-    // pays every miner at its own SOQ address needs that copy and is not built,
-    // so SOQ_* is ignored there — said at startup, never silently.
+    // Private mode: soqucoind builds the whole Soqucoin block with
+    // createauxblock, PAT block attestation included. Public mode: each miner
+    // who gave an sq1p address gets its own Soqucoin block, built from
+    // soqucoind's getblocktemplate coinbase with only the placeholder payout
+    // replaced, so the witness and PAT commitments are the node's own (see
+    // pm.buildSoqAuxBlock and soqucoin doc/pool-integration.md, "Block
+    // attestation (PAT)"); SOQ_PAYOUT_ADDRESS then receives the pool fee.
     this.soq = null;
+    // Kept for the status shape: always null since public Soqucoin exists.
     this.soqIgnored = null;
     if (this.merged && config.soq && config.soq.rpc && config.soq.payoutAddress) {
-      if (this.publicMerged) {
-        this.soqIgnored = 'Soqucoin is merge-mined on the private port only; SOQ_* is ignored with PUBLIC_MERGED=1';
-      } else {
-        this.soq = {
-          name: 'SOQ',
-          label: 'Soqucoin',
-          // A hard deadline, not only a silence timeout: a node trickling
-          // bytes must not stall a poll (or the pool's start, which waits for
-          // the first one). And a host name that answers with more than one
-          // address on the shared docker network is refused (see rpc.js).
-          rpc: new RpcClient({ ...config.soq.rpc, timeout: 5000, deadline: 5000, singleAddress: true }),
-          submitRpc: new RpcClient({ ...config.soq.rpc, timeout: 180000, singleAddress: true }),
-          payoutAddress: config.soq.payoutAddress,
-          // Set once soqucoind has said which network it is on (see fetchSoqBlock).
-          networkChecked: false,
-          block: null,
-          unavailableSince: null,
-          error: null,
-          polling: false,
-        };
-      }
+      this.soq = {
+        name: 'SOQ',
+        label: 'Soqucoin',
+        // A hard deadline, not only a silence timeout: a node trickling
+        // bytes must not stall a poll (or the pool's start, which waits for
+        // the first one). And a host name that answers with more than one
+        // address on the shared docker network is refused (see rpc.js).
+        rpc: new RpcClient({ ...config.soq.rpc, timeout: 5000, deadline: 5000, singleAddress: true }),
+        submitRpc: new RpcClient({ ...config.soq.rpc, timeout: 180000, singleAddress: true }),
+        payoutAddress: config.soq.payoutAddress,
+        // Set once soqucoind has said which network it is on (see fetchSoqBlock).
+        networkChecked: false,
+        block: null,
+        unavailableSince: null,
+        error: null,
+        polling: false,
+      };
     }
 
     this.jobs = new Map();
@@ -498,8 +497,10 @@ class Pool extends EventEmitter {
       try {
         this.soqPayoutScript = u.addressToScript(this.soq.payoutAddress, this.soqChain);
         this.log(
-          `merged mining: aux Soqucoin paying ${this.soq.payoutAddress} — optional: while soqucoind ` +
-            'is unreachable, jobs carry the other chains only'
+          (this.publicMerged
+            ? `merged mining: aux Soqucoin for every miner who gives an sq1p address, pool fee to ${this.soq.payoutAddress}`
+            : `merged mining: aux Soqucoin paying ${this.soq.payoutAddress}`) +
+            ' — optional: while soqucoind is unreachable, jobs carry the other chains only'
         );
       } catch (err) {
         this.log(`Soqucoin DISABLED: SOQ_PAYOUT_ADDRESS is not a ${this.soqChain} address (${err.message})`);
@@ -680,9 +681,10 @@ class Pool extends EventEmitter {
     return block;
   }
 
-  // Soqucoin's aux block: pollPep's twin, private mode only (see the
-  // constructor), so always createauxblock. A changed hash rebuilds the job
-  // without clean_jobs; soqucoind going away drops Soqucoin from the next job.
+  // Soqucoin's aux block: pollPep's twin. Private mode: createauxblock. Public
+  // mode: a template each miner's own block is built from (fetchSoqBlock). A
+  // changed hash rebuilds the job without clean_jobs; soqucoind going away
+  // drops Soqucoin from the next job.
   async pollSoq() {
     const soq = this.soq;
     if (!soq || soq.polling) return;
@@ -731,6 +733,44 @@ class Pool extends EventEmitter {
       }
       this.soq.networkChecked = true;
     }
+    if (this.publicMerged) {
+      // soqucoind's getblocktemplate has its peer check commented out
+      // (src/rpc/mining.cpp, SOQ-INFRA-002), where createauxblock still has
+      // one: a node that lost its peers would keep serving work on a tip the
+      // network has left. Asked here instead, every poll; regtest has no peers.
+      if (this.chain !== 'regtest') {
+        const peers = await this.soq.rpc.call('getconnectioncount');
+        if (!(peers > 0)) throw new Error('soqucoind has no peers, so its tip may be stale');
+      }
+      // As for Pepecoin: reused until the tip moves, or fees grew and the last
+      // template is older than a job rebuild, so that a fresh curtime alone
+      // never makes every miner's job new. SegWit is active on every Soqucoin
+      // network, and getblocktemplate refuses a caller that does not say it
+      // understands it.
+      const fresh = await this.soq.rpc.call('getblocktemplate', [{ rules: ['segwit'] }]);
+      const cur = this.soq.block && this.soq.block.soqTemplate;
+      let template = fresh;
+      if (cur && cur.previousblockhash === fresh.previousblockhash) {
+        const age = Date.now() - (this.soq.templateAt || 0);
+        const worthIt = fresh.coinbasevalue > cur.coinbasevalue && age >= this.config.jobRebuildMs;
+        if (!worthIt) template = cur;
+      }
+      // The pool's own view (miner and fee both at the fee address), checked
+      // like a createauxblock answer; buildSoqAuxBlock refuses a template it
+      // cannot turn into a valid block — wrong chain id, no coinbasetxn, a
+      // placeholder that is not the whole reward — and the poll then leaves
+      // Soqucoin out instead of handing miners work that can never pay.
+      const base = pm.buildSoqAuxBlock(template, this.soqPayoutScript, this.soqPayoutScript, this.poolFeePercent);
+      this.checkAuxAnswer(base, 'soqucoind');
+      // Once per template: soqucoind itself judges the block built from it.
+      if (this.soq.proposedTemplate !== template) {
+        await this.proposeSoqBlock(base);
+        this.soq.proposedTemplate = template;
+      }
+      if (template === fresh) this.soq.templateAt = Date.now();
+      base.soqTemplate = template;
+      return base;
+    }
     const block = await this.soq.rpc.call('createauxblock', [this.soq.payoutAddress]);
     if (!block || !/^[0-9a-f]{64}$/.test(String(block.hash))) {
       throw new Error('soqucoind createauxblock did not return an aux block hash');
@@ -740,6 +780,47 @@ class Pool extends EventEmitter {
     }
     this.checkAuxAnswer(block, 'soqucoind');
     return block;
+  }
+
+  // Public Soqucoin: the pool builds the block, so soqucoind is asked to judge
+  // one before any miner works on it. getblocktemplate's proposal mode runs
+  // TestBlockValidity on it — every consensus rule except the proof of work,
+  // which is the one thing a share supplies: the coinbase output types, the
+  // witness commitment, the PAT commitment (and, once Soqucoin makes it
+  // mandatory, its absence), the chain id. Several of those are relaxed on
+  // regtest, so this is how a mainnet pool learns about them from mainnet's
+  // own node rather than from a block that cannot pay.
+  //
+  // The block proposed is the pool's own view (miner and fee at the fee
+  // address); each miner's variant differs only in the miner's payout script,
+  // a 32-byte witness-v1 program checked at authorize time. The auxpow it
+  // carries is a placeholder in the right shape, which proposal mode does not
+  // check.
+  async proposeSoqBlock(base) {
+    const parentHeader = Buffer.alloc(80);
+    // A minimal transaction for the placeholder parent coinbase: one null
+    // input, one empty OP_RETURN output.
+    const parentCoinbase = Buffer.concat([
+      Buffer.from('01000000', 'hex'), u.varIntBuffer(1), Buffer.alloc(32), Buffer.from('ffffffff', 'hex'),
+      u.varIntBuffer(2), Buffer.from('0000', 'hex'), Buffer.from('ffffffff', 'hex'),
+      u.varIntBuffer(1), Buffer.alloc(8), u.varIntBuffer(1), Buffer.from('6a', 'hex'),
+      Buffer.from('00000000', 'hex'),
+    ]);
+    const placeholder = aux.serializeAuxPow({
+      coinbaseTx: parentCoinbase,
+      parentBlockHash: u.reverseBuffer(u.sha256d(parentHeader)).toString('hex'),
+      merkleBranch: [],
+      parentHeader,
+      chainBranch: [],
+      chainIndex: 0,
+    });
+    const verdict = await this.soq.rpc.call('getblocktemplate', [
+      { mode: 'proposal', data: pm.serializeAuxBlock(base, placeholder) },
+    ]);
+    if (verdict === null) return;
+    // "inconclusive-not-best-prevblk": the tip moved since the template. Not a
+    // verdict on the block; the next poll brings the new template.
+    throw new Error(`soqucoind would not accept the pool's Soqucoin block (${verdict}); Soqucoin left out until it does`);
   }
 
   // The rest of a createauxblock answer, checked before any of it is used. A
@@ -1292,7 +1373,7 @@ class Pool extends EventEmitter {
     const pepBlock = this.pep && this.pep.block ? this.pep.block : null;
     const pepHash = pepBlock ? pepBlock.hash : null;
     const pepChanged = !!this.currentJob && (this.currentJob.pepHash || null) !== pepHash;
-    // Soqucoin in the same way (private mode only; this.soq is null otherwise).
+    // Soqucoin in the same way.
     const soqBlock = this.soq && this.soq.block ? this.soq.block : null;
     const soqHash = soqBlock ? soqBlock.hash : null;
     const soqChanged = !!this.currentJob && (this.currentJob.soqHash || null) !== soqHash;
@@ -1324,6 +1405,7 @@ class Pool extends EventEmitter {
     // template as the job it belongs to. Pepecoin's likewise.
     if (this.publicMerged) job.dogeTemplate = auxBlock.dogeTemplate;
     if (this.publicMerged && pepBlock) job.pepTemplate = pepBlock.pepTemplate;
+    if (this.publicMerged && soqBlock) job.soqTemplate = soqBlock.soqTemplate;
     // When this job's data was ASKED for, not when it was built: the ordering
     // guard above compares request times, and a slow RPC would otherwise make
     // a stale answer look newer than the fresh one it overtook.
@@ -1415,7 +1497,7 @@ class Pool extends EventEmitter {
       // safe answer, because the base job pays the pool.
       throw new Error('public merged job requested for a client without both payout addresses');
     }
-    const key = this.payoutKey(client.ltcPayoutScript, client.payoutScript, client.pepPayoutScript);
+    const key = this.payoutKey(client.ltcPayoutScript, client.payoutScript, client.pepPayoutScript, client.soqPayoutScript);
     if (!job.variants) job.variants = new Map();
     const cached = job.variants.get(key);
     if (cached) return cached;
@@ -1433,23 +1515,36 @@ class Pool extends EventEmitter {
       );
       extraAux.push({ name: 'PEP', chainId: PEP_CHAIN_ID, block: pepBlock });
     }
+    // Soqucoin likewise, for the miners who gave an sq1p address: their own
+    // block from soqucoind's coinbase, the placeholder replaced by 99% to them
+    // and the fee to the pool (pm.buildSoqAuxBlock).
+    if (job.soqTemplate && client.soqPayoutScript) {
+      const soqBlock = pm.buildSoqAuxBlock(
+        job.soqTemplate, client.soqPayoutScript, this.soqPayoutScript, this.poolFeePercent
+      );
+      extraAux.push({ name: 'SOQ', chainId: SOQ_CHAIN_ID, block: soqBlock });
+    }
     const variant = new MergedJob(job.id, job.template, client.ltcPayoutScript, this.config.coinbaseTag, auxBlock, {
       fee: { script: this.ltcPayoutScript, percent: this.poolFeePercent },
       extraAux,
     });
     variant.dogeTemplate = job.dogeTemplate;
     variant.pepTemplate = job.pepTemplate || null;
+    variant.soqTemplate = job.soqTemplate || null;
     job.variants.set(key, variant);
     return variant;
   }
 
   // One payout set, one key: the Litecoin and Dogecoin scripts, plus the
-  // Pepecoin one when the miner gave it. Two miners with the same LTC/DOGE pair
-  // but different Pepecoin addresses mine different coinbases, so they must not
-  // share a cached variant.
-  payoutKey(ltcScript, dogeScript, pepScript) {
-    const base = `${ltcScript.toString('hex')}:${dogeScript.toString('hex')}`;
-    return pepScript ? `${base}:${pepScript.toString('hex')}` : base;
+  // Pepecoin and Soqucoin ones when the miner gave them. Two miners with the
+  // same LTC/DOGE pair but different Pepecoin or Soqucoin addresses mine
+  // different coinbases, so they must not share a cached variant. The tags keep
+  // a PEP-only and a SOQ-only miner apart even if their scripts were equal.
+  payoutKey(ltcScript, dogeScript, pepScript, soqScript) {
+    let key = `${ltcScript.toString('hex')}:${dogeScript.toString('hex')}`;
+    if (pepScript) key += `:${pepScript.toString('hex')}`;
+    if (soqScript) key += `:soq=${soqScript.toString('hex')}`;
+    return key;
   }
 
   async longPollLoop() {
@@ -1953,16 +2048,18 @@ class Pool extends EventEmitter {
       // addresses and a dot are already 69 characters, so the truncated form
       // would always carry a broken Dogecoin address.
       const raw = String(username || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
-      const parsed = pm.parsePublicUsername(raw, this.ltcChain, this.chain, this.pep ? this.pepChain : null);
+      const parsed = pm.parsePublicUsername(
+        raw, this.ltcChain, this.chain, this.pep ? this.pepChain : null, this.soq ? this.soqChain : null
+      );
       if (!parsed.ok) {
         this.churnLog(`worker refused: ${client.worker} from ${client.remote} — ${parsed.reason}`);
         return this.reply(client, msg.id, false, [24, parsed.reason, null]);
       }
-      const key = this.payoutKey(parsed.ltcScript, parsed.dogeScript, parsed.pepScript);
+      const key = this.payoutKey(parsed.ltcScript, parsed.dogeScript, parsed.pepScript, parsed.soqScript);
       const inUse = new Set();
       for (const c of this.clients.values()) {
         if (c !== client && c.authorized && c.ltcPayoutScript && c.payoutScript) {
-          inUse.add(this.payoutKey(c.ltcPayoutScript, c.payoutScript, c.pepPayoutScript));
+          inUse.add(this.payoutKey(c.ltcPayoutScript, c.payoutScript, c.pepPayoutScript, c.soqPayoutScript));
         }
       }
       if (!inUse.has(key) && inUse.size >= this.config.maxPayoutVariants) {
@@ -1978,12 +2075,15 @@ class Pool extends EventEmitter {
       client.payoutAddress = parsed.dogeAddress;
       client.pepPayoutScript = parsed.pepScript;
       client.pepPayoutAddress = parsed.pepAddress;
+      client.soqPayoutScript = parsed.soqScript;
+      client.soqPayoutAddress = parsed.soqAddress;
       client.authorized = true;
       this.reply(client, msg.id, true);
       this.churnLog(
         `worker connected: ${client.worker} (#${client.id}) from ${client.remote} ` +
           `paying LTC ${parsed.ltcAddress} / DOGE ${parsed.dogeAddress}` +
-          (parsed.pepAddress ? ` / PEP ${parsed.pepAddress}` : '')
+          (parsed.pepAddress ? ` / PEP ${parsed.pepAddress}` : '') +
+          (parsed.soqAddress ? ` / SOQ ${parsed.soqAddress}` : '')
       );
       this.setDifficulty(client, client.difficulty);
       if (this.currentJob) this.sendJob(client, this.currentJob, true);
@@ -2428,11 +2528,27 @@ class Pool extends EventEmitter {
     }
     const auxPowHex = job.auxPowHex(result.header, result.coinbase, a.chainId);
 
-    // Soqucoin: private mode only, so always the proof for the block soqucoind
-    // built itself with createauxblock.
+    // Soqucoin. Public mode: the miner's own block, built by the pool from
+    // soqucoind's coinbase, submitted whole with submitblock. Private mode:
+    // the proof for the block soqucoind built itself with createauxblock.
     if (a.name === 'SOQ') {
       const soq = this.soq;
       if (!soq) return; // switched off since this job was built
+      if (this.publicMerged) {
+        const blockHex = pm.serializeAuxBlock(a.block, Buffer.from(auxPowHex, 'hex'));
+        await this.submitCandidate({
+          chain: a.name,
+          height: a.height,
+          hash: a.hash,
+          hex: blockHex,
+          hexLabel: `BLOCK HEX chain=${a.name} height=${a.height}`,
+          reward: a.value,
+          address: client.soqPayoutAddress,
+          worker: client.worker,
+          submit: () => this.submitSoqBlockWithRetries(blockHex, a.height),
+        });
+        return;
+      }
       await this.submitCandidate({
         chain: a.name,
         height: a.height,
@@ -2524,6 +2640,24 @@ class Pool extends EventEmitter {
         }
         lastError = err;
         this.log(`Soqucoin submitauxblock attempt ${attempt + 1}/${delays.length} for height ${height} failed: ${err.message}`);
+      }
+    }
+    throw lastError;
+  }
+
+  // A whole Soqucoin block (public mode). submitblock answers null when the
+  // block is accepted and a reason when it is not — "bad-blk-pat-commitment"
+  // among them — which goes into the block's record as given.
+  async submitSoqBlockWithRetries(blockHex, height) {
+    const delays = [0, 1000, 3000, 10000, 30000, 60000];
+    let lastError = null;
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (delays[attempt] > 0) await sleep(delays[attempt]);
+      try {
+        return await this.soq.submitRpc.submitBlock(blockHex);
+      } catch (err) {
+        lastError = err;
+        this.log(`Soqucoin submitblock attempt ${attempt + 1}/${delays.length} for height ${height} failed: ${err.message}`);
       }
     }
     throw lastError;
@@ -2792,6 +2926,8 @@ class Pool extends EventEmitter {
       // counts only the miners that actually mine Pepecoin as PEP hashrate.
       ltcPayoutAddress: c.ltcPayoutAddress || null,
       pepPayoutAddress: c.pepPayoutAddress || null,
+      // The same for Soqucoin.
+      soqPayoutAddress: c.soqPayoutAddress || null,
       connectedAt: c.connectedAt,
       lastShareAt: c.lastShareAt,
       latencyMs: c.latencyMs == null ? null : c.latencyMs,
@@ -2836,6 +2972,10 @@ class Pool extends EventEmitter {
     const pepHashrate = this.publicMerged
       ? workers.filter((w) => w.pepPayoutAddress).reduce((t, w) => t + w.hashrate, 0)
       : allHashrate;
+    // Soqucoin likewise: on the public port only the miners with an sq1p address.
+    const soqHashrate = this.publicMerged
+      ? workers.filter((w) => w.soqPayoutAddress).reduce((t, w) => t + w.hashrate, 0)
+      : allHashrate;
     const chains = !job
       ? []
       : this.merged
@@ -2853,7 +2993,7 @@ class Pool extends EventEmitter {
               label: a.name === 'PEP' ? 'Pepecoin' : a.name === 'SOQ' ? 'Soqucoin' : a.name,
               height: a.height,
               difficulty: a.difficulty,
-              hashrate: a.name === 'PEP' ? pepHashrate : allHashrate,
+              hashrate: a.name === 'PEP' ? pepHashrate : a.name === 'SOQ' ? soqHashrate : allHashrate,
               // What the block pays (subsidy + fees, smallest unit) and the
               // chain's target block time — with the difficulty, that gives
               // the network's hashrate on the dashboard. Pepecoin and

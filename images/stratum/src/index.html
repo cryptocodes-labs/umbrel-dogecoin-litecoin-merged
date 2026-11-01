@@ -1011,7 +1011,7 @@ function minerSources(d){
 // the status lists per coin.
 function payoutOf(src, w){
   if(w.ltcPayoutAddress){
-    return { LTC: w.ltcPayoutAddress, DOGE: w.payoutAddress || null, PEP: w.pepPayoutAddress || null };
+    return { LTC: w.ltcPayoutAddress, DOGE: w.payoutAddress || null, PEP: w.pepPayoutAddress || null, SOQ: w.soqPayoutAddress || null };
   }
   const out = {};
   for(const c of chainsOf(src.s)){
@@ -2174,7 +2174,7 @@ async function tick(){
   // is how a miner ends up configured for payouts that never happen.
   const paidCoins = chainsOf(d).filter((c) => c.payoutAddress);
   if(d.mergedMining && d.publicMerged){
-    $('cUser').textContent = 'LTC-address.DOGE-address' + (d.pep ? '.PEP-address' : '') + '.rig1';
+    $('cUser').textContent = 'LTC-address.DOGE-address' + (d.pep ? '.PEP-address' : '') + (d.soq ? '.SOQ-address' : '') + '.rig1';
   } else if(d.mergedMining && d.lockPayoutAddress){
     $('cUser').textContent = 'rig1';
   } else {
@@ -2193,7 +2193,8 @@ async function tick(){
   }
   $('connectNote').textContent = d.mergedMining && d.publicMerged
     ? 'Each miner is paid at the addresses in its own username: Litecoin first, then Dogecoin' +
-      (d.pep ? ', then optionally Pepecoin' : '') + ', then a name for the rig, separated by dots. The pool keeps its fee on every coin. The password is ignored; miners insist on one, so send anything.'
+      (d.pep && d.soq ? ', then optionally Pepecoin and a Soqucoin sq1p… address' : d.pep ? ', then optionally Pepecoin' : d.soq ? ', then optionally a Soqucoin sq1p… address' : '') +
+      ', then a name for the rig, separated by dots. Every block is paid straight from its coinbase; the pool keeps its fee on every coin. The password is ignored; miners insist on one, so send anything.'
     : d.mergedMining && d.lockPayoutAddress
       ? 'Any name will do: every block of every coin pays the addresses configured for this app, whatever a worker puts in the username field — ' +
         (paidCoins.length ? paidCoins.map((c) => c.name + ' ' + String(c.payoutAddress).slice(0, 8) + '…').join(', ') : 'see the coin cards') +

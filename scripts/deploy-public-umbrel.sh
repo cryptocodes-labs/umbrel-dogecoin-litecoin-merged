@@ -29,10 +29,12 @@ sudo docker pull -q "$IMG"
 mkdir -p "$DIR/data"
 # Node connection details and the fee addresses come from the running app, so
 # nothing secret is typed or shown here. Everything else is set explicitly.
-# That includes Pepecoin: set PEP_* in the app's .env and this port follows;
-# leave them out and it runs Litecoin + Dogecoin exactly as before.
+# That includes Pepecoin and Soqucoin: set PEP_* / SOQ_* in the app's .env and
+# this port follows (every public miner who gives a PEP or sq1p address is paid
+# at it, the app's PEP/SOQ address takes the fee); leave them out and it runs
+# Litecoin + Dogecoin exactly as before.
 sudo docker inspect "$APP" --format '{{range .Config.Env}}{{println .}}{{end}}' \
-  | grep -E '^(RPC_HOST|RPC_PORT|RPC_USER|RPC_PASSWORD|LTC_RPC_HOST|LTC_RPC_PORT|LTC_RPC_USER|LTC_RPC_PASSWORD|PAYOUT_ADDRESS|LTC_PAYOUT_ADDRESS|PEP_RPC_HOST|PEP_RPC_PORT|PEP_RPC_USER|PEP_RPC_PASSWORD|PEP_PAYOUT_ADDRESS)=' \
+  | grep -E '^(RPC_HOST|RPC_PORT|RPC_USER|RPC_PASSWORD|LTC_RPC_HOST|LTC_RPC_PORT|LTC_RPC_USER|LTC_RPC_PASSWORD|PAYOUT_ADDRESS|LTC_PAYOUT_ADDRESS|PEP_RPC_HOST|PEP_RPC_PORT|PEP_RPC_USER|PEP_RPC_PASSWORD|PEP_PAYOUT_ADDRESS|SOQ_RPC_HOST|SOQ_RPC_PORT|SOQ_RPC_USER|SOQ_RPC_PASSWORD|SOQ_PAYOUT_ADDRESS)=' \
   > "$DIR/env"
 cat >> "$DIR/env" <<'EOF'
 MERGED_MINING=1

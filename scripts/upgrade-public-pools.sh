@@ -10,7 +10,16 @@
 # within 60 s the old image is started again. The rented port goes first; the
 # public one is only touched when that worked.
 #
+# ADD_SOQ=1 bash ~/upgrade-public-pools.sh also turns Soqucoin on for both
+# ports (stratum 1.10+): its node connection and the fee address are copied
+# from the running DOGE+LTC+PEP+SOQ app, as deploy-public-umbrel.sh copies the
+# others. Each public miner who adds an sq1p address to its username is then
+# paid 99% of a Soqucoin block straight from the coinbase; the app's
+# SOQ_PAYOUT_ADDRESS gets the 1%. A container that already has SOQ_* keeps its
+# own. Without ADD_SOQ nothing about Soqucoin changes.
+#
 set -uo pipefail
+APP=doge-dogecoin-solo_app_1
 NEW=ghcr.io/cryptocodes-labs/umbrel-dogecoin-stratum:1.9.3@sha256:6fe2810508ecbac13abbe228872098533b9aa509afccd48f388aedd24105085e
 STAMP=$(date +%Y%m%d-%H%M%S)
 echo "== pulling $NEW"
@@ -28,6 +37,14 @@ upgrade() {
   # The running container's environment, minus what the image itself sets.
   local envf="$dir/env-$STAMP"
   sudo sh -c "umask 077; docker inspect $c --format \"{{range .Config.Env}}{{println .}}{{end}}\" | grep -vE \"^(PATH|NODE_VERSION|YARN_VERSION|NODE_ENV)=\" | grep -v \"^\$\" > $envf"
+  if [ "${ADD_SOQ:-0}" = 1 ] && ! sudo grep -q "^SOQ_RPC_HOST=" "$envf"; then
+    sudo sh -c "umask 077; docker inspect $APP --format \"{{range .Config.Env}}{{println .}}{{end}}\" | grep -E \"^SOQ_(RPC_HOST|RPC_PORT|RPC_USER|RPC_PASSWORD|PAYOUT_ADDRESS)=\" >> $envf"
+    if sudo grep -q "^SOQ_RPC_HOST=." "$envf" && sudo grep -q "^SOQ_PAYOUT_ADDRESS=." "$envf"; then
+      echo "Soqucoin: node and fee address taken from $APP"
+    else
+      echo "ADD_SOQ=1, but $APP has no SOQ_RPC_HOST and SOQ_PAYOUT_ADDRESS: Soqucoin stays off on $c"
+    fi
+  fi
   echo "old image: $old  network: $net  ports: $sport (stratum) $wport (dashboard)"
   run() {
     sudo docker run -d --name "$c" --restart unless-stopped --network "$net" \

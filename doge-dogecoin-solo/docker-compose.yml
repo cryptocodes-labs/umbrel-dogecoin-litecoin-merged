@@ -359,8 +359,10 @@ services:
       PEP_RPC_PASSWORD: "${PEP_RPC_PASSWORD:-}"
       PEP_PAYOUT_ADDRESS: "${PEP_PAYOUT_ADDRESS:-}"
 
-      # Soqucoin, a third aux chain beside Dogecoin and Pepecoin, PRIVATE
-      # merged mode only (ignored with PUBLIC_MERGED=1). Off while SOQ_RPC_HOST
+      # Soqucoin, a third aux chain beside Dogecoin and Pepecoin. On a private
+      # merged port every Soqucoin block pays SOQ_PAYOUT_ADDRESS; with
+      # PUBLIC_MERGED=1 each miner who adds an sq1p address to its username is
+      # paid at it and SOQ_PAYOUT_ADDRESS takes the pool fee. Off while SOQ_RPC_HOST
       # or SOQ_PAYOUT_ADDRESS is empty, which is the default. SOQ_RPC_HOST is
       # the Soqucoin Node app's container, doge-soqucoin-node_soqucoind_1,
       # SOQ_RPC_PASSWORD is shown on that app's dashboard (without it the node
