@@ -9,7 +9,7 @@
 //   2. The chain merkle tree with DOGE (98), PEP (63) and SOQ (21329): four
 //      leaves at nonce 0, every chain's proof passing the auxpow.cpp rules,
 //      which Soqucoin 2.6.1 shares with Dogecoin 1.14.9.
-//   3. The pool: SOQ only in private merged mode, and nothing about the other
+//   3. The pool: SOQ in private and public merged mode, and nothing about the other
 //      chains changes when it is configured but absent.
 //
 // The daemon-backed proof (soqucoind accepts the block) is
@@ -205,7 +205,7 @@ const soqAux = { hash: soqHash, bits: '1a096559', height: 28723, coinbasevalue: 
   check("the parent's version never claims Soqucoin's id", ((template.version >>> 16) & 0xffff) !== SOQ_CHAIN_ID);
 }
 
-console.log('\nthe pool: SOQ in private merged mode only');
+console.log('\nthe pool: SOQ in private and public merged mode, never without merged mining');
 {
   const soqConf = { rpc: { host: '127.0.0.1', port: 1, user: 'u', password: 'p' }, payoutAddress: 'sq1pu43lfdnte6tmfwzhvy8y8j8ga0xghd9j9hhaazczrl2ellfynqtsv270c8' };
   const base = {
@@ -219,7 +219,7 @@ console.log('\nthe pool: SOQ in private merged mode only');
   const priv = new Pool({ ...base, soq: soqConf });
   check('private merged: Soqucoin is on', priv.soq && priv.soq.name === 'SOQ' && !priv.soqIgnored);
   const pub = new Pool({ ...base, publicMerged: true, soq: soqConf });
-  check('public merged: Soqucoin is off, and says why', pub.soq === null && /private port only/.test(pub.soqIgnored || ''));
+  check('public merged: Soqucoin is on too (each miner paid at its own sq1p address)', pub.soq && pub.soq.name === 'SOQ' && !pub.soqIgnored);
   const none = new Pool({ ...base });
   check('not configured: off, nothing to say', none.soq === null && none.soqIgnored === null);
   const dogeOnly = new Pool({ ...base, mergedMining: false, soq: soqConf });

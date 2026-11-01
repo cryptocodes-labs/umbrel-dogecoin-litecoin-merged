@@ -82,9 +82,15 @@ jobs:
         run: node test/multi_aux_unit.js
 
       # Soqucoin as a third aux chain: its Bech32m addresses, the four-leaf
-      # chain tree, and that it only ever runs on the private merged port.
+      # chain tree, and that it runs on both merged ports.
       - name: Soqucoin unit checks
         run: node test/soq_unit.js
+
+      # Public Soqucoin: each miner's block built from soqucoind's own
+      # coinbase (placeholder split 99/1, witness and PAT commitments kept),
+      # every malformed template refused, and the sq1p part of a username.
+      - name: Public Soqucoin unit checks
+        run: node test/soq_public_unit.js
 
       # PEER_POOLS: the other pool containers' figures, read over the internal
       # network and added up for the umbrelOS widgets; hostile answers refused.

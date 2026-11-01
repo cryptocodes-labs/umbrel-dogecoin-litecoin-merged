@@ -207,10 +207,11 @@ const config = {
   pepPollMs: Math.max(500, num('PEP_POLL_MS', 2000)),
 
   // Soqucoin, a third aux chain beside Dogecoin and Pepecoin. On only when
-  // SOQ_RPC_HOST and SOQ_PAYOUT_ADDRESS are both set, and only in PRIVATE
-  // merged mode (with PUBLIC_MERGED=1 it is ignored and the log says so).
-  // Every Soqucoin block pays SOQ_PAYOUT_ADDRESS, an sq1p… address. soqucoind
-  // must run with enablemining=1, which mainnet does not default to.
+  // SOQ_RPC_HOST and SOQ_PAYOUT_ADDRESS are both set, an sq1p… address. On
+  // the private port every Soqucoin block pays it; with PUBLIC_MERGED=1 each
+  // miner who gives an sq1p address is paid at its own and SOQ_PAYOUT_ADDRESS
+  // receives the pool fee. soqucoind must run with enablemining=1, which
+  // mainnet does not default to.
   soq:
     process.env.SOQ_RPC_HOST && (process.env.SOQ_PAYOUT_ADDRESS || '').trim()
       ? {
@@ -769,6 +770,7 @@ function trimPeerWorker(w) {
     payoutAddress: peerAddress(w.payoutAddress),
     ltcPayoutAddress: peerAddress(w.ltcPayoutAddress),
     pepPayoutAddress: peerAddress(w.pepPayoutAddress),
+    soqPayoutAddress: peerAddress(w.soqPayoutAddress),
     avg: peerAverages(w.avg),
     shareHistory: (Array.isArray(w.shareHistory) ? w.shareHistory : [])
       .filter((t) => typeof t === 'number' && Number.isFinite(t)).slice(-48),

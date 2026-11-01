@@ -7,9 +7,16 @@
 //      Soqucoin block; the Soqucoin block is the one soqucoind built with
 //      createauxblock and pays SOQ_PAYOUT_ADDRESS.
 //   2. A Base58 SOQ_PAYOUT_ADDRESS switches Soqucoin off and nothing else.
-//   3. The public port ignores SOQ_* and says so.
+//   3. The public port: a miner who gives an sq1p address gets its own
+//      Soqucoin block, built by the pool from soqucoind's getblocktemplate
+//      coinbase — 99% to the miner, 1% to SOQ_PAYOUT_ADDRESS — with real
+//      attested spends in it, so the PAT commitment soqucoind computed has to
+//      survive the pool's rebuild; soqucoind accepts the block. The pool's
+//      proposal check refuses a block whose commitment was tampered with.
 //   4. soqucoind going away: Soqucoin drops out of the next job and the other
 //      three chains keep being mined.
+//
+// Part 3 spends coins, so soqucoind runs WITH a wallet in merged_regtest.sh.
 //
 // The fake miner rebuilds coinbase, merkle root and header from nothing but
 // the mining.notify parameters, as firmware does (see pep_pool_regtest.js).
@@ -25,6 +32,7 @@ const { Pool } = require('../images/stratum/src/pool');
 const { RpcClient } = require('../images/stratum/src/rpc');
 const u = require('../images/stratum/src/util');
 const aux = require('../images/stratum/src/auxpow');
+const pm = require('../images/stratum/src/public-merged');
 const { PEP_CHAIN_ID, DOGE_CHAIN_ID, SOQ_CHAIN_ID } = require('../images/stratum/src/merged');
 
 const LTC_PORT = Number(process.argv[2] || 19332);
@@ -304,8 +312,22 @@ const counts = () => Promise.all([
   }
 
   // -------------------------------------------------------- public port
-  console.log('\n3. the public port ignores SOQ_* and says so');
+  console.log('\n3. the public port: each miner its own Soqucoin block, attested spends and all');
   {
+    // Ordinary sq1p spends in the next block, so soqucoind's coinbase carries
+    // a PAT commitment. They need coins somebody holds the key to: the
+    // wallet's, mined to it and matured (regtest coinbase maturity: 60).
+    const walletSoq = await soq.call('getnewaddress');
+    check('soqucoind\'s wallet hands out a Dilithium (sq1p) address',
+      (await soq.call('validateaddress', [walletSoq])).isdilithium === true, walletSoq);
+    await soq.call('generatetoaddress', [70, walletSoq]);
+    const sent = [];
+    for (let i = 0; i < 2; i++) sent.push(await soq.call('sendtoaddress', [soqAddress(crypto.randomBytes(32)), 1000]));
+    const gbt = await soq.call('getblocktemplate', [{ rules: ['segwit'] }]);
+    check('the template carries both spends', sent.every((id) => gbt.transactions.some((t) => t.txid === id)),
+      JSON.stringify(gbt.transactions.map((t) => t.txid)));
+    check('and soqucoind put a PAT commitment (6a225041…) in its coinbase', gbt.coinbasetxn.data.includes('246a225041'));
+
     const lines = [];
     const pool = new Pool(poolConfig({
       payoutAddress: poolDoge, ltcPayoutAddress: poolLtc, stratumPort: STRATUM_PORT + 20, publicMerged: true,
@@ -314,9 +336,108 @@ const counts = () => Promise.all([
     }));
     pool.log = (s) => lines.push(s);
     await pool.start();
-    check('no Soqucoin on the public port', pool.soq === null && pool.currentJob.extraAux.every((a) => a.name !== 'SOQ'));
-    check('the log says so', lines.some((l) => /private port only/.test(l)), lines.join(' | '));
-    check('Pepecoin is unaffected', !!pool.currentJob.pepTemplate);
+    check('Soqucoin is on on the public port', !!pool.soq && !!pool.currentJob.soqTemplate, lines.join(' | '));
+    check('the log says how it is paid', lines.some((l) => /aux Soqucoin for every miner who gives an sq1p address/.test(l)));
+    check('soqucoind judged the pool\'s block before any miner got it (proposal accepted)',
+      pool.soq.proposedTemplate === pool.currentJob.soqTemplate);
+    check('the job\'s template carries the spends', sent.every((id) => pool.currentJob.soqTemplate.transactions.some((t) => t.txid === id)));
+
+    const aLtc = await ltc.call('getnewaddress', ['', 'legacy']);
+    const aDoge = await doge.call('getnewaddress');
+    const aPep = await pep.call('getnewaddress');
+    const aProg = crypto.randomBytes(32);
+    const aSoq = soqAddress(aProg);
+    const bLtc = await ltc.call('getnewaddress', ['', 'legacy']);
+    const bDoge = await doge.call('getnewaddress');
+    const nameA = `${aLtc}.${aDoge}.${aPep}.${aSoq}.rig1`;
+    const A = await connectMiner(STRATUM_PORT + 20, nameA);
+    const B = await connectMiner(STRATUM_PORT + 20, `${bLtc}.${bDoge}.rig2`);
+    const C = await connectMiner(STRATUM_PORT + 20, `${bLtc}.${bDoge}.${aSoq.slice(0, -1)}${aSoq.endsWith('q') ? 'p' : 'q'}.rig3`);
+    check('miner A (LTC.DOGE.PEP.SOQ.rig) is authorized', A.auth.result === true, JSON.stringify(A.auth));
+    check('miner B (LTC.DOGE.rig) is authorized', B.auth.result === true, JSON.stringify(B.auth));
+    check('a mistyped sq1p address is refused at authorize', C.auth.result !== true && /Soqucoin/.test(JSON.stringify(C.auth.error)),
+      JSON.stringify(C.auth));
+    {
+      const ws = pool.snapshot().workers;
+      const wA = ws.find((w) => w.payoutAddress === aDoge);
+      const wB = ws.find((w) => w.payoutAddress === bDoge);
+      check("the snapshot gives A's Soqucoin address and B's as null",
+        wA && wA.soqPayoutAddress === aSoq && wB && wB.soqPayoutAddress === null, JSON.stringify([wA, wB]));
+    }
+    const nA = await A.m.waitForNotify();
+    const nB = await B.m.waitForNotify();
+
+    // A's blocks, rebuilt here from the job's templates: what A's work must
+    // commit to.
+    const job = pool.currentJob;
+    const dA = pm.buildAuxBlock(job.dogeTemplate, u.addressToScript(aDoge, 'regtest'), u.addressToScript(poolDoge, 'regtest'), 1, '/soq-test/');
+    const pA = pm.buildAuxBlock(job.pepTemplate, u.addressToScript(aPep, 'pep-regtest'), u.addressToScript(poolPep, 'pep-regtest'),
+      1, '/soq-test/', PEP_CHAIN_ID);
+    const sA = pm.buildSoqAuxBlock(job.soqTemplate, Buffer.from(`5120${aProg.toString('hex')}`, 'hex'),
+      Buffer.from(soqScriptHex, 'hex'), 1);
+    const dB = pm.buildAuxBlock(job.dogeTemplate, u.addressToScript(bDoge, 'regtest'), u.addressToScript(poolDoge, 'regtest'), 1, '/soq-test/');
+    const treeA = aux.buildChainTree([
+      { chainId: DOGE_CHAIN_ID, hash: dA.hash }, { chainId: PEP_CHAIN_ID, hash: pA.hash }, { chainId: SOQ_CHAIN_ID, hash: sA.hash },
+    ]);
+    check("A's work commits to A's own DOGE, PEP and SOQ blocks",
+      nA[3].includes(aux.auxCommitment(treeA.root, treeA.nonce, treeA.size).toString('hex')));
+    check("B's work is Dogecoin alone, as it always was", nB[3].includes(aux.auxCommitment(dB.hash, 0).toString('hex')));
+
+    const goal = minOf(
+      u.targetFromBits(job.template.bits), u.targetFromBits(job.dogeTemplate.bits),
+      u.targetFromBits(job.pepTemplate.bits), u.targetFromBits(job.soqTemplate.bits)
+    );
+    const sol = await mine(nA, A.en1, goal);
+    check('A found a hash meeting all four targets', !!sol);
+    const [l0, d0, p0, s0] = await counts();
+    const r = await A.m.call('mining.submit', [nameA, nA[0], sol.extranonce2, nA[7], sol.nonce.toString(16).padStart(8, '0')]);
+    check('the share is accepted', r.result === true, JSON.stringify(r.error));
+    await pool.drain(60000);
+    const [l1, d1, p1, s1] = await counts();
+    check('Litecoin, Dogecoin, Pepecoin and Soqucoin each grew by one',
+      l1 === l0 + 1 && d1 === d0 + 1 && p1 === p0 + 1 && s1 === s0 + 1, `${l0}->${l1} ${d0}->${d1} ${p0}->${p1} ${s0}->${s1}`);
+    const soqTip = await soq.call('getbestblockhash');
+    check("the Soqucoin tip is A's own block", soqTip === sA.hash, `${soqTip} vs ${sA.hash}`);
+    const tipBlock = await soq.call('getblock', [soqTip]);
+    check('it carries both attested spends', sent.every((id) => tipBlock.tx.includes(id)), JSON.stringify(tipBlock.tx));
+    check('and an auxpow', !!tipBlock.auxpow);
+    const outs = await coinbaseScripts(soq, soqTip);
+    const value = BigInt(sA.coinbasevalue);
+    const toA = outs.find((o) => o.hex === `5120${aProg.toString('hex')}`);
+    const toPool = outs.find((o) => o.hex === soqScriptHex);
+    check('99% of the reward to A\'s sq1p address', toA && toA.value === value - value / 100n,
+      JSON.stringify(outs.map((o) => [o.hex.slice(0, 12), String(o.value)])));
+    check('1% to SOQ_PAYOUT_ADDRESS', toPool && toPool.value === value / 100n);
+    const pat = outs.filter((o) => o.hex.startsWith('6a225041'));
+    check('exactly one PAT commitment, the one soqucoind computed, accepted by soqucoind',
+      pat.length === 1 && pat[0].hex === sA.patCommitment && pat[0].value === 0n,
+      JSON.stringify(pat.map((o) => [o.hex, String(o.value)])));
+    const recs = pool.snapshot().blocks.filter((b) => b.chain === 'SOQ' && b.hash === soqTip);
+    check("the SOQ record: accepted, at A's address", recs.length === 1 && recs[0].accepted === true && recs[0].address === aSoq,
+      JSON.stringify(recs));
+
+    // The proposal check refuses what soqucoind would refuse. A block whose
+    // PAT commitment was altered: soqucoind recomputes it and says so.
+    await soq.call('sendtoaddress', [soqAddress(crypto.randomBytes(32)), 1000]);
+    const t2 = await soq.call('getblocktemplate', [{ rules: ['segwit'] }]);
+    const at = t2.coinbasetxn.data.indexOf('246a225041') + 10;
+    check('a fresh template with a new spend has a PAT commitment again', at > 10);
+    const flipped = (parseInt(t2.coinbasetxn.data.slice(at, at + 2), 16) ^ 1).toString(16).padStart(2, '0');
+    const tampered = { ...t2, coinbasetxn: { data: t2.coinbasetxn.data.slice(0, at) + flipped + t2.coinbasetxn.data.slice(at + 2) } };
+    let refused = null;
+    try {
+      await pool.proposeSoqBlock(pm.buildSoqAuxBlock(tampered, Buffer.from(soqScriptHex, 'hex'), Buffer.from(soqScriptHex, 'hex'), 1));
+    } catch (err) { refused = err.message; }
+    check('the proposal check refuses a block with a wrong PAT commitment (bad-blk-pat-commitment)',
+      refused && /bad-blk-pat-commitment/.test(refused), String(refused));
+    let fine = 'not run';
+    try {
+      await pool.proposeSoqBlock(pm.buildSoqAuxBlock(t2, Buffer.from(soqScriptHex, 'hex'), Buffer.from(soqScriptHex, 'hex'), 1));
+      fine = null;
+    } catch (err) { fine = err.message; }
+    check('and accepts the same block with the commitment as soqucoind made it', fine === null, String(fine));
+
+    for (const x of [A, B, C]) x.m.socket.destroy();
     pool.stop();
   }
 
