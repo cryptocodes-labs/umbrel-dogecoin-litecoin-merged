@@ -33,6 +33,8 @@ mkdir -p "$DIR/data"
 # this port follows (every public miner who gives a PEP or sq1p address is paid
 # at it, the app's PEP/SOQ address takes the fee); leave them out and it runs
 # Litecoin + Dogecoin exactly as before.
+# Created 600 before anything is written: it holds the RPC passwords.
+install -m 600 /dev/null "$DIR/env"
 sudo docker inspect "$APP" --format '{{range .Config.Env}}{{println .}}{{end}}' \
   | grep -E '^(RPC_HOST|RPC_PORT|RPC_USER|RPC_PASSWORD|LTC_RPC_HOST|LTC_RPC_PORT|LTC_RPC_USER|LTC_RPC_PASSWORD|PAYOUT_ADDRESS|LTC_PAYOUT_ADDRESS|PEP_RPC_HOST|PEP_RPC_PORT|PEP_RPC_USER|PEP_RPC_PASSWORD|PEP_PAYOUT_ADDRESS|SOQ_RPC_HOST|SOQ_RPC_PORT|SOQ_RPC_USER|SOQ_RPC_PASSWORD|SOQ_PAYOUT_ADDRESS)=' \
   > "$DIR/env"

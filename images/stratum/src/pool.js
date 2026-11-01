@@ -703,7 +703,13 @@ class Pool extends EventEmitter {
     } catch (err) {
       if (!soq.unavailableSince) {
         soq.unavailableSince = Date.now();
+        soq.reasonLoggedAt = Date.now();
         this.log(`Soqucoin left out of new jobs: ${err.message}. The other chains are mined as before.`);
+      } else if (soq.error !== err.message && Date.now() - (soq.reasonLoggedAt || 0) >= 60000) {
+        // Same outage, new reason (no peers, then a refused proposal, …): say
+        // so, at most once a minute, so the log tells what is wrong now.
+        soq.reasonLoggedAt = Date.now();
+        this.log(`Soqucoin still left out of new jobs, now: ${err.message}`);
       }
       soq.error = err.message;
       soq.block = null;

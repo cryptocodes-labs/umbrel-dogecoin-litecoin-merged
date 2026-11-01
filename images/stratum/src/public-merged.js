@@ -162,8 +162,9 @@ function buildAuxBlock(template, minerScript, feeScript, feePercent, tag, chainI
 // Why splitting the payout is safe for both commitments: the witness
 // commitment is over wtxids, and the coinbase's wtxid is defined as zero; the
 // PAT attestation covers two-item witness spends, and the coinbase spends
-// nothing. Neither depends on the coinbase's outputs. test/soq_public_regtest.js
-// proves it against soqucoind with attested spends in the block.
+// nothing. Neither depends on the coinbase's outputs. Part 3 of
+// test/soq_pool_regtest.js proves it against soqucoind with attested spends
+// in the block.
 
 const SOQ_CHAIN_ID = 21329;
 // CScript() << OP_1 << std::vector<unsigned char>(32, 0) — mining.cpp's scriptDummy.
@@ -432,7 +433,11 @@ function parsePublicUsername(username, ltcChain, dogeChain, pepChain = null, soq
         rest = rest.slice(1);
         continue;
       } catch (err) {
-        if (/^s{1,2}q1/i.test(part) && part.length >= 14) {
+        // Only something that could be (part of) an address: sq1/ssq1 and then
+        // nothing but Bech32 characters, 14 or more in all. A rig name such as
+        // "sq1-garage-rig" or "SQ1rig-L7" (a dash, or b/i/o/1 after the prefix)
+        // stays a rig name; a cut-off or mistyped address is still refused.
+        if (/^s{1,2}q1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$/i.test(part) && part.length >= 14) {
           return { ok: false, reason: `the Soqucoin address is not valid: ${err.message}` };
         }
       }

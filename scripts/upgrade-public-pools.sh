@@ -37,12 +37,20 @@ upgrade() {
   # The running container's environment, minus what the image itself sets.
   local envf="$dir/env-$STAMP"
   sudo sh -c "umask 077; docker inspect $c --format \"{{range .Config.Env}}{{println .}}{{end}}\" | grep -vE \"^(PATH|NODE_VERSION|YARN_VERSION|NODE_ENV)=\" | grep -v \"^\$\" > $envf"
-  if [ "${ADD_SOQ:-0}" = 1 ] && ! sudo grep -q "^SOQ_RPC_HOST=" "$envf"; then
-    sudo sh -c "umask 077; docker inspect $APP --format \"{{range .Config.Env}}{{println .}}{{end}}\" | grep -E \"^SOQ_(RPC_HOST|RPC_PORT|RPC_USER|RPC_PASSWORD|PAYOUT_ADDRESS)=\" >> $envf"
+  if [ "${ADD_SOQ:-0}" = 1 ]; then
     if sudo grep -q "^SOQ_RPC_HOST=." "$envf" && sudo grep -q "^SOQ_PAYOUT_ADDRESS=." "$envf"; then
-      echo "Soqucoin: node and fee address taken from $APP"
+      echo "Soqucoin: $c already has a node and a fee address; kept"
     else
-      echo "ADD_SOQ=1, but $APP has no SOQ_RPC_HOST and SOQ_PAYOUT_ADDRESS: Soqucoin stays off on $c"
+      # Empty SOQ_* lines (deploy-public-umbrel.sh copies them as the app has
+      # them, filled or not, and a run before SOQ was set leaves them too)
+      # would shadow the ones added below: drop every SOQ_ line first.
+      sudo sed -i "/^SOQ_/d" "$envf"
+      sudo sh -c "umask 077; docker inspect $APP --format \"{{range .Config.Env}}{{println .}}{{end}}\" | grep -E \"^SOQ_(RPC_HOST|RPC_PORT|RPC_USER|RPC_PASSWORD|PAYOUT_ADDRESS)=\" >> $envf"
+      if sudo grep -q "^SOQ_RPC_HOST=." "$envf" && sudo grep -q "^SOQ_PAYOUT_ADDRESS=." "$envf"; then
+        echo "Soqucoin: node and fee address taken from $APP"
+      else
+        echo "ADD_SOQ=1, but $APP has no SOQ_RPC_HOST and SOQ_PAYOUT_ADDRESS: Soqucoin stays off on $c"
+      fi
     fi
   fi
   echo "old image: $old  network: $net  ports: $sport (stratum) $wport (dashboard)"
@@ -53,7 +61,14 @@ upgrade() {
       --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID "$1" >/dev/null
   }
   sudo docker rm -f "$c" >/dev/null
-  if ! run "$NEW"; then echo "start failed, back to $old"; run "$old"; return 1; fi
+  # A failed start can leave a created-but-stopped container with this name;
+  # without removing it, starting the old image would fail on the name too.
+  if ! run "$NEW"; then
+    echo "start failed, back to $old"
+    sudo docker rm -f "$c" >/dev/null 2>&1
+    run "$old"
+    return 1
+  fi
   for i in $(seq 1 30); do
     sleep 2
     if curl -s -m 3 "http://127.0.0.1:$wport/api/status" | grep -q "\"ok\":true"; then

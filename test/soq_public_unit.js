@@ -235,6 +235,13 @@ const off = parse(`${ltc}.${doge}.${soq}.rig1`, 'pep-main', null);
 check('with Soqucoin off the name reads exactly as before', off.ok && off.soqScript === null && off.workerName === `${soq}.rig1`);
 const rigSq = parse(`${ltc}.${doge}.sq1`);
 check('a short rig name that happens to start with sq1 is still a rig name', rigSq.ok && rigSq.workerName === 'sq1');
+for (const rig of ['sq1-garage-rig01', 'SQ1rig-antminer-L7', 'sq1_bitaxe_gamma']) {
+  const r = parse(`${ltc}.${doge}.${rig}`);
+  check(`a rig name like ${rig} (not Bech32 after sq1) stays a rig name`, r.ok && r.soqScript === null && r.workerName === rig,
+    JSON.stringify(r));
+}
+const cut = parse(`${ltc}.${doge}.${soq.slice(0, 40)}`);
+check('a cut-off Soqucoin address is still refused', !cut.ok && /Soqucoin address is not valid/.test(cut.reason), JSON.stringify(cut));
 const twice = parse(`${ltc}.${doge}.${soq}.${soq}`);
 check('a second Soqucoin address is just part of the rig name', twice.ok && twice.soqAddress === soq && twice.workerName === soq);
 
